@@ -171,13 +171,13 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
                 "/pkg/device_wasm_bg.wasm",
                 get_service(picoserve::response::File::with_content_type(
                     "application/wasm",
-                    include_bytes!("../../device-wasm/pkg/device_wasm_bg.wasm"),
+                    include_bytes!("./static/device_wasm_bg.wasm"),
                 )),
             )
             .route(
                 "/pkg/device_wasm.js",
                 get_service(picoserve::response::File::javascript(include_str!(
-                    "../../device-wasm/pkg/device_wasm.js"
+                    "./static/device_wasm.js"
                 ))),
             );
 

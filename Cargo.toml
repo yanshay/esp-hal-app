@@ -3,4 +3,4 @@ resolver = "2"
 
 members = ["xtask"]
 
-exclude = ["device", "device-wasm"]
+exclude = ["esp-hal-app-framework", "device-wasm"]
