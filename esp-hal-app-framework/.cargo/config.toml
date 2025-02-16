@@ -1,0 +1,13 @@
+[target.xtensa-esp32s3-none-elf]
+
+[env]
+# ESP_WIFI_CONFIG_RX_QUEUE_SIZE="6"
+# ESP_WIFI_CONFIG_MAX_BURST_SIZE="12"
+
+[build]
+rustflags = ["--cfg", "getrandom_backend=\"custom\""]
+
+target = "xtensa-esp32s3-none-elf"
+
+[unstable]
+build-std = ["alloc", "core"]

@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>My Wasm Project</title>
+  </head>
+  <body>
+    <button class="apply-button" id="test-key" onclick="testKey()">
+      Test Key
+    </button>
+    <script type="module">
+      // Importing WASM as a JS module requires us to call an init function provided by the default export.
+      // This is planned to be changed in the future.
+      import {
+        default as wasm,
+        greet,
+        greettext,
+        derive_key,
+        encrypt,
+        decrypt,
+      } from "./pkg/device_wasm.js";
+      // initialize wasm
+      wasm();
+
+      function testKey() {
+        // let a = greettext("This is from me");
+        // alert(a);
+        // let b = get_random_str();
+        // alert(b);
+        let key = derive_key("mypassword", "example_salt");
+        // alert(b);
+        // let c = encrypt(b, "text to encrypt");
+        // alert (c);
+        // let d = decrypt(b, c);
+        // alert(d);
+        let data = "This is data from JS";
+        let encrypted_data = encrypt(key, data);
+        alert(encrypted_data);
+        let decrypted_data = decrypt(key, encrypted_data);
+        alert(decrypted_data);
+
+        // let fromRust = '{"ciphertext":"y5o/SiXD/DhTE1XVmgVqW80Kdpe85buy/B6TrcyEMNj6i9gwhElX5U3py3/mD8Q=","iv":"w2zWILCxOzXoPXj3"}';
+        let fromRust =
+          '{"ciphertext":"doaQIJGzWJDOXr70pTuCs17FryUJRWq2rkHkQgTFOqMCzHtotEWO6PM=","iv":"kJ5WyW1QyNVrxBph"}';
+        let fromRustDecrypted = decrypt(key, fromRust);
+        alert(fromRustDecrypted);
+      }
+      window.testKey = testKey;
+    </script>
+  </body>
+</html>
