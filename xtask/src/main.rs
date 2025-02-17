@@ -140,6 +140,7 @@ const MANIFEST_TEMPLATE: &str = r#"{
   "version": "{version}",
   "improv": true,
   "new_install_prompt_erase": false,
+  "new_install_improv_wait_time": 30,
   "builds": [
     {
       "chipFamily": "ESP32-S3",
