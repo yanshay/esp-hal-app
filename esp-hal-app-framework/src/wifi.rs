@@ -98,6 +98,7 @@ pub async fn connection(
             ap_addr.3,
             { prefix },
         );
+        term_info!("- Continue web flash process in browser");
         // run Improv Wifi to get ssid/password
 
         ap_active = true;
