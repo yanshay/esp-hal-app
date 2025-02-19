@@ -1,0 +1,4 @@
+.DS_Store
+bins/*
+!bins/boot_loader.bin
+
