@@ -394,7 +394,7 @@ async fn stats_task() {
 }
 
 #[allow(non_snake_case)]
-pub struct GWT32SC01PlusPeripherals<C, P>
+pub struct WT32SC01PlusPeripherals<C, P>
 where
     C: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
     P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
@@ -428,7 +428,7 @@ pub struct WT32SC01Plus {
 
 impl WT32SC01Plus {
     pub fn new<C, P>(
-        peripherals: GWT32SC01PlusPeripherals<C, P>,
+        peripherals: WT32SC01PlusPeripherals<C, P>,
         display_orientation: mipidsi::options::Orientation,
         framework: Rc<RefCell<Framework>>,
     ) -> (Self, WT32SC01PlusRunner<C, P>)
@@ -456,7 +456,7 @@ where
     C: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
     P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
 {
-    peripherals: Option<GWT32SC01PlusPeripherals<C, P>>,
+    peripherals: Option<WT32SC01PlusPeripherals<C, P>>,
     display_orientation: mipidsi::options::Orientation,
     framework: Rc<RefCell<Framework>>,
     init_done: &'static InitDone,

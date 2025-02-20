@@ -11,7 +11,7 @@
 pub mod log_ext;
 
 pub mod terminal;
-pub mod display;
+pub mod wt32_sc01_plus;
 pub mod flash_map;
 pub mod framework;
 
