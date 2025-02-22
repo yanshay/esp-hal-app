@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
 
-members = ["xtask"]
+members = ["cli-flasher", "xtask"]
 
 exclude = ["esp-hal-app-framework", "device-wasm"]
