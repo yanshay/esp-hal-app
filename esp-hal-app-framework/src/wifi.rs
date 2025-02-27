@@ -295,7 +295,7 @@ pub async fn connection(
     }
 
     term_info!("About to connect to WiFi SSID '{}'", ssid);
-    trace!("About to connect Wifi using '{}', '{}'", password, ssid);
+    // trace!("About to connect Wifi using '{}', '{}'", password, ssid);
 
     loop {
         #[allow(clippy::single_match)]
