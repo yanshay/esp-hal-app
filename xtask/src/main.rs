@@ -12,9 +12,9 @@ use std::{
 
 #[derive(Parser)]
 #[command(name = "cli")]
-#[command(author = "Your Name")]
+#[command(author = "SpoolEase")]
 #[command(version = "1.0")]
-#[command(about = "A CLI for OTA updates and WiFi management", long_about = None)]
+#[command(about = "A CLI for common esp-hal-app related operations", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     main_command: MainCommand,
@@ -101,7 +101,7 @@ enum Deploy {
 
 fn main() {
     let cli = Cli::parse();
-
+    
     match cli.main_command {
         MainCommand::Ota(command) => {
             if let Err(e) = handle_ota(&command) {

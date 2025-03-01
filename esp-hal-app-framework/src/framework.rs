@@ -14,6 +14,7 @@ use super::{
 use crate::ota::OtaRequest;
 
 const WIFI_CONFIG_KEY: &str = "__wifi__";
+const FIXED_CONFIG_KEY: &str = "__fixed_key__";
 const DISPLAY_CONFIG_KEY: &str = "__display_";
 // const WEB_SERVER_COMMANDS_LISTENERS: usize = WEB_SERVER_NUM_LISTENERS + 1 + 1; // web_server listeners + potentially https captive if on https + 1 for use by app_config to monitor if required to behave accordingly
 const WEB_SERVER_COMMANDS_LISTENERS: usize = 20; // calculation is as above, but to avoid generics going into embassy tasks, use here a number large enough, at very little cost in memory
@@ -27,6 +28,11 @@ pub enum WebConfigMode {
 pub struct WifiConfig {
     pub ssid: Option<String>,
     pub password: Option<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct FixedKeyConfig {
+    pub key: Option<String>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -74,6 +80,7 @@ pub struct Framework {
     pub web_server_commands: &'static WebServerCommands,
     pub wifi_ssid: Option<String>,
     pub wifi_password: Option<String>,
+    pub fixed_key: Option<String>,
 
     pub display_dimming_timeout: u64,
     pub display_dimming_percent: u8,
@@ -117,6 +124,7 @@ impl Framework {
             web_server_commands,
             wifi_ssid: None,
             wifi_password: None,
+            fixed_key: None,
             display_dimming_timeout: 60 * 2,
             display_dimming_percent: 10,
             display_blackout_timeout: 60 * 5,
@@ -140,6 +148,12 @@ impl Framework {
             if let Ok(wifi_config) = serde_json::from_str::<WifiConfig>(&wifi_store) {
                 self.wifi_ssid = wifi_config.ssid;
                 self.wifi_password = wifi_config.password;
+            }
+        }
+
+        if let Ok(Some(fixed_key_store)) = block_on(self.flash_map.borrow_mut().fetch(String::from(FIXED_CONFIG_KEY))) {
+            if let Ok(fixed_key_config) = serde_json::from_str::<FixedKeyConfig>(&fixed_key_store) {
+                self.fixed_key = fixed_key_config.key;
             }
         }
 
@@ -180,6 +194,9 @@ impl Framework {
                         term_info!("Loaded WiFi credentials from SDCard (overriding Flash)");
                     }
                     "wifi_password" => self.wifi_password = Some(String::from(value)),
+                    "fixed_key" => {
+                        self.fixed_key = Some(String::from(value));
+                    }
                     "display_dimming_timeout" => {
                         if let Ok(display_dimming_timeout) = value.parse::<u64>() {
                             self.display_dimming_timeout = display_dimming_timeout;
@@ -246,6 +263,19 @@ impl Framework {
     pub fn reset_device(&self) {
         esp_hal::reset::software_reset();
     }
+    pub fn set_fixed_key(&mut self, key: &str) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
+        if key.is_empty() {
+            self.fixed_key = None;
+            return embassy_futures::block_on(self.flash_map.borrow_mut().remove(String::from(FIXED_CONFIG_KEY)))
+        } else {
+            self.fixed_key = Some(String::from(key));
+            let fixed_key_config = FixedKeyConfig {
+                key: Some(String::from(key)),
+            };
+            let fixed_key_store = serde_json::to_string(&fixed_key_config).unwrap();
+            return self.store(String::from(FIXED_CONFIG_KEY), fixed_key_store)
+        }
+    }
 
     // Wifi
     pub fn erase_stored_wifi_credentials(&mut self) {
@@ -284,28 +314,36 @@ impl Framework {
 
     // Web App
     pub fn start_web_app(&self, stack: Stack<'static>, mode: WebConfigMode) {
-        fn number_to_ascii_from_list(n: u8) -> u8 {
-            // characters to used, removed a few that are unclear/similar (iI0Oo)
-            let charset = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz123456789-/$@?!";
-
-            // Make sure the number is within the 0..255 range and map it to the charset
-            let index = (n % 62) as usize; // % 62 ensures it stays in the 0..61 range
-            charset[index]
-        }
-
         let salt: &[u8] = self.settings.web_app_salt.as_bytes();
+        let iterations = self.settings.web_app_key_derivation_iterations;
+
         let mut buf_vec = vec![0; self.settings.web_app_security_key_length];
         let mut buf = buf_vec.as_mut_slice();
-        getrandom::getrandom(&mut buf).unwrap();
-        for x in buf.iter_mut() {
-            *x = number_to_ascii_from_list(*x);
+
+        let key_to_use;
+        if let Some(key) = self.fixed_key.as_ref() {
+            key_to_use = key.as_str();
+        } else {
+            fn number_to_ascii_from_list(n: u8) -> u8 {
+                // characters to used, removed a few that are unclear/similar (iI0Oo)
+                let charset = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz123456789-/$@?!";
+
+                // Make sure the number is within the 0..255 range and map it to the charset
+                let index = (n % 62) as usize; // % 62 ensures it stays in the 0..61 range
+                charset[index]
+            }
+
+            getrandom::getrandom(&mut buf).unwrap();
+            for x in buf.iter_mut() {
+                *x = number_to_ascii_from_list(*x);
+            }
+            buf[0] = buf[0].to_ascii_uppercase(); // to make it easier to type in iPhone that starts with capital lette
+            let key = core::str::from_utf8(&buf).unwrap();
+            key_to_use = key;
         }
-        buf[0] = buf[0].to_ascii_uppercase(); // to make it easier to type in iPhone that starts with capital lette
-        let key = core::str::from_utf8(&buf).unwrap();
-        let iterations = self.settings.web_app_key_derivation_iterations;
-        self.encryption_key.replace(derive_key(key, salt, iterations));
+        self.encryption_key.replace(derive_key(key_to_use, salt, iterations));
         self.web_server_commands.publisher().unwrap().publish_immediate(WebConfigCommand::Start(stack));
-        self.notify_web_config_started(key, mode);
+        self.notify_web_config_started(key_to_use, mode);
     }
     pub fn stop_web_app(&self) {
         self.web_server_commands.publisher().unwrap().publish_immediate(WebConfigCommand::Stop);

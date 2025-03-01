@@ -278,6 +278,19 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
             }),
         );
 
+        let framework_clone_post = framework.clone();
+        let router = router.route(
+            "/api/fixed-key-config",
+            post(move |State(Encryption(key)): State<Encryption>, FixedKeyConfigDTO { key: fixed_key }| {
+                ready(match framework_clone_post.borrow_mut().set_fixed_key(&fixed_key) {
+                    Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
+                    Err(e) => SetConfigResponseDTO {
+                        error_text: Some(format!("{e:?}")),
+                    }
+                    .encrypt(&key.borrow()),
+                })
+            }));
+
         router
     }
 }
@@ -378,6 +391,12 @@ struct TestKeyDTO {
     test: String,
 }
 encrypted_input!(TestKeyDTO);
+
+#[derive(Deserialize)]
+struct FixedKeyConfigDTO {
+    key: String,
+}
+encrypted_input!(FixedKeyConfigDTO);
 
 #[derive(Serialize)]
 struct TestKeyResponseDTO {
