@@ -135,7 +135,7 @@ struct OtaToml {
     crc32: String,
 }
 
-const MANIFEST_TEMPLATE: &str = r#"{
+const MANIFEST_TEMPLATE_NEW: &str = r#"{
   "name": "{package_name}",
   "version": "{version}",
   "improv": true,
@@ -147,6 +147,24 @@ const MANIFEST_TEMPLATE: &str = r#"{
       "parts": [
         { "path": "boot-loader.bin", "offset": 0 },
         { "path": "partition-table.bin", "offset": 32768 },
+        { "path": "{bin_name}", "offset": 2097152 }
+      ]
+    }
+  ]
+}
+"#;
+
+const MANIFEST_TEMPLATE_UPGRADE: &str = r#"{
+  "name": "{package_name}",
+  "version": "{version}",
+  "improv": false,
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 30,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "clear-ota.bin", "offset": 36864 },
         { "path": "{bin_name}", "offset": 2097152 }
       ]
     }
@@ -188,12 +206,18 @@ fn handle_web_install(command: &OtaAndFlasherCommand) -> Result<(), String> {
 
         let (_bin_size, _crc32) = espflash_gen_bin(&package_folder_path, &package_name, &web_install_folder_path, &bin_name)?;
 
-        let manifest = MANIFEST_TEMPLATE.replace("{package_name}", &package_name).replace("{version}", &version.to_string()).replace("{bin_name}", &bin_name);
+        let manifest_new = MANIFEST_TEMPLATE_NEW.replace("{package_name}", &package_name).replace("{version}", &version.to_string()).replace("{bin_name}", &bin_name);
 
-        let web_install_manifest_path = web_install_folder_path.join("manifest.json");
-        std::fs::write(&web_install_manifest_path, manifest)
-            .map_err(|e| format!("Failed writing {} : {e:?}", web_install_manifest_path.display()))?;
-        println!("Saved maifest file to {}", web_install_manifest_path.display());
+        let web_install_manifest_new_path = web_install_folder_path.join(format!("manifest-new-{}.json", &version.to_string()));
+        std::fs::write(&web_install_manifest_new_path, manifest_new)
+            .map_err(|e| format!("Failed writing {} : {e:?}", web_install_manifest_new_path.display()))?;
+        println!("Saved new manifest file to {}", web_install_manifest_new_path.display());
+
+        let manifest_upgrade = MANIFEST_TEMPLATE_UPGRADE.replace("{package_name}", &package_name).replace("{version}", &version.to_string()).replace("{bin_name}", &bin_name);
+        let web_install_manifest_upgrade_path = web_install_folder_path.join(format!("manifest-upgrade-{}.json", &version.to_string()));
+        std::fs::write(&web_install_manifest_upgrade_path, manifest_upgrade)
+            .map_err(|e| format!("Failed writing {} : {e:?}", web_install_manifest_upgrade_path.display()))?;
+        println!("Saved upgrade manifest file to {}", web_install_manifest_upgrade_path.display());
     }
     Ok(())
 }
