@@ -45,4 +45,6 @@ pub mod prelude {
     pub use crate::framework::FrameworkSettings;
     pub use crate::license::LicenseManager;
     pub use crate::flash_map::FlashMap;
+    pub const FRAMEWORK_STA_STACK_RESOURCES: usize = 4;  // potentially https captive +  ota + captive dns + ? initial firmware check if doen't complete 
+    pub const FRAMEWORK_AP_STACK_RESOURCES: usize = 4;
 }
