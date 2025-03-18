@@ -21,7 +21,6 @@ incremental = false
 opt-level = 's'
 lto = 'fat'
 overflow-checks = false
-
 [profile.release.package.esp-wifi]
 opt-level = 3
 
@@ -37,7 +36,7 @@ esp32s3 = { version = "0.30.0" }
 
 # Esp-Hal Crates
 xtensa-lx-rt = { version = "0.18.0", features = ["float-save-restore"] }
-esp-hal = { version = "0.23.1", features = ["quad-psram"] }
+esp-hal = { version = "0.23.1", features = ["unstable"] }
 esp-backtrace = { version = "0.15.0", features = [ "panic-handler", "println", "exception-handler"] }
 esp-println = { version = "0.13.0", default-features = false, features = ["critical-section", "colors", "auto", "log"] }
 esp-hal-embassy = { version = "0.6.0" }
