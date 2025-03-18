@@ -23,8 +23,14 @@ pub async fn connection(
     mut controller: esp_wifi::wifi::WifiController<'static>,
     sta_stack: Stack<'static>,
     ap_stack: Stack<'static>,
+    #[cfg(feature="improv-jtag-serial")]
     mut rx: esp_hal::usb_serial_jtag::UsbSerialJtagRx<'static, esp_hal::Async>,
+    #[cfg(feature="improv-jtag-serial")]
     mut tx: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Async>,
+    #[cfg(feature="improv-uart")]
+    mut rx: esp_hal::uart::UartRx<'static, esp_hal::Async>,
+    #[cfg(feature="improv-uart")]
+    mut tx: esp_hal::uart::UartTx<'static, esp_hal::Async>,
     framework: Rc<RefCell<Framework>>,
 ) {
     let ap_addr = framework.borrow().settings.ap_addr;
@@ -38,7 +44,10 @@ pub async fn connection(
         let data = packet.to_bytes().unwrap();
         tx.write(&data).await.unwrap();
         if flush {
+            #[cfg(feature="improv-jtag-serial")]
             tx.flush().await.unwrap();
+            #[cfg(feature="improv-uart")]
+            tx.flush_async().await.unwrap();
         }
         // embedded_io_async usage if needed:
         // embedded_io_async::Write::write(&mut tx, &data).await.unwrap();

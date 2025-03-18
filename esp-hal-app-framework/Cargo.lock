@@ -1899,6 +1899,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07382e59a6da0e104039910aab2cc65fe3560d78c6927e730939f86ca2d3b77c"
 dependencies = [
  "embedded-storage",
+ "esp32",
  "esp32s3",
  "log",
 ]
