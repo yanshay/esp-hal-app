@@ -53,7 +53,7 @@ pub trait NestedAppWithWebAppStateBuilder: AppWithStateBuilder<State = WebAppSta
     fn path_description(&self) -> &'static str;
 }
 
-pub struct WebAppProps<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> {
+pub struct WebAppBuilder<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> {
     pub app_builder: NestedMainAppBuilder,
     pub framework: Rc<RefCell<Framework>>,
     pub captive_html: &'static str,
@@ -61,7 +61,7 @@ pub struct WebAppProps<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> {
 
 }
 
-impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder for WebAppProps<NestedMainAppBuilder> {
+impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder for WebAppBuilder<NestedMainAppBuilder> {
     type State = WebAppState;
     type PathRouter = impl PathRouter<WebAppState>;
 

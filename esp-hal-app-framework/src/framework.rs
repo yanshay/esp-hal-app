@@ -9,15 +9,19 @@ use esp_mbedtls::TlsReference;
 use esp_storage::FlashStorage;
 
 use super::{
-    flash_map::FlashMap, framework_web_app::derive_key, ota::ota_task, terminal::Terminal, web_server::WebConfigCommand
+    flash_map::FlashMap, framework_web_app::derive_key, ota::ota_task, terminal::Terminal,
 };
-use crate::ota::OtaRequest;
+use crate::{ota::OtaRequest, web_server::WebServerCommand};
 
 const WIFI_CONFIG_KEY: &str = "__wifi__";
 const FIXED_CONFIG_KEY: &str = "__fixed_key__";
 const DISPLAY_CONFIG_KEY: &str = "__display_";
 // const WEB_SERVER_COMMANDS_LISTENERS: usize = WEB_SERVER_NUM_LISTENERS + 1 + 1; // web_server listeners + potentially https captive if on https + 1 for use by app_config to monitor if required to behave accordingly
-const WEB_SERVER_COMMANDS_LISTENERS: usize = 20; // calculation is as above, but to avoid generics going into embassy tasks, use here a number large enough, at very little cost in memory
+
+// calculation is as above, but to avoid generics going into embassy tasks, use here a number large enough, at very little cost in memory
+// Should be enough for the largest number per web application, since they use different instances, but this is the max number of listeners to control
+// Not nice, but good enough for now
+const WEB_SERVER_COMMANDS_LISTENERS: usize = 20; 
 
 #[derive(Clone, Copy)]
 pub enum WebConfigMode {
@@ -67,10 +71,10 @@ pub struct FrameworkSettings {
     pub app_cargo_pkg_version: &'static str,
 }
 
-pub type WebServerCommands = PubSubChannel<NoopRawMutex, WebConfigCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1,>;
+pub type WebServerCommands = PubSubChannel<NoopRawMutex, WebServerCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1,>;
 #[allow(dead_code)]
-pub type WebServerPublisher = Publisher<'static, NoopRawMutex, WebConfigCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1>;
-pub type WebServerSubscriber = Subscriber<'static, NoopRawMutex, WebConfigCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1>;
+pub type WebServerPublisher = Publisher<'static, NoopRawMutex, WebServerCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1>;
+pub type WebServerSubscriber = Subscriber<'static, NoopRawMutex, WebServerCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1>;
 
 pub struct Framework {
     pub settings: FrameworkSettings,
@@ -87,9 +91,9 @@ pub struct Framework {
     pub display_blackout_timeout: u64,
     pub undim_display: &'static embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::NoopRawMutex, ()>,
 
-    spawner: Spawner,
-    stack: Stack<'static>,
-    tls: TlsReference<'static>,
+    pub spawner: Spawner,
+    pub stack: Stack<'static>,
+    pub tls: TlsReference<'static>,
     pub encryption_key: &'static RefCell<Vec<u8>>,
 
     config_processed_ok: Option<bool>,
@@ -342,11 +346,11 @@ impl Framework {
             key_to_use = key;
         }
         self.encryption_key.replace(derive_key(key_to_use, salt, iterations));
-        self.web_server_commands.publisher().unwrap().publish_immediate(WebConfigCommand::Start(stack));
+        self.web_server_commands.publisher().unwrap().publish_immediate(WebServerCommand::Start(stack));
         self.notify_web_config_started(key_to_use, mode);
     }
     pub fn stop_web_app(&self) {
-        self.web_server_commands.publisher().unwrap().publish_immediate(WebConfigCommand::Stop);
+        self.web_server_commands.publisher().unwrap().publish_immediate(WebServerCommand::Stop);
         self.notify_web_config_stopped();
     }
 

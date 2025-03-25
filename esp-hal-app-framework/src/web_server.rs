@@ -1,78 +1,79 @@
 use core::cell::RefCell;
 
-use alloc::{format, rc::Rc};
-use embassy_executor::Spawner;
+use alloc::{format, rc::Rc, string::{String, ToString}};
 use embassy_futures::select::select;
 use embassy_net::Stack;
-use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
-    pubsub::WaitResult,
-};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, pubsub::WaitResult};
 use embassy_time::Duration;
 use embedded_io_async::Write;
 use esp_mbedtls::TlsReference;
-use picoserve::{ routing, serve_with_state, AppRouter, Config, LogDisplay, Router };
+use picoserve::{
+    routing, serve_with_state, AppRouter, AppWithStateBuilder, Config, LogDisplay, Router,
+};
 
 use embassy_net::tcp::TcpSocket;
 use embassy_sync::mutex::Mutex;
 use esp_mbedtls::{asynch::Session, Certificates, Mode, TlsError, TlsVersion, X509};
 
-// use crate::WEB_SERVER_COMMANDS_LISTENERS;
-use super::{framework::{Framework, WebServerCommands, WebServerSubscriber}, framework_web_app::{NestedAppWithWebAppStateBuilder, WebAppProps, WebAppState}};
+use super::{
+    framework::{Framework, WebServerCommands, WebServerSubscriber},
+    framework_web_app::{NestedAppWithWebAppStateBuilder, WebAppBuilder, WebAppState},
+};
 
-#[derive(Clone)]
-pub enum WebConfigCommand {
-    Start(Stack<'static>),
-    Stop,
-}
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Specific Web Application Runner for the Config App which is part of the Framework
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-pub struct Runner<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder + 'static> {
+pub struct WebAppRunner<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder + 'static> {
     framework: Rc<RefCell<Framework>>,
-    app_props: &'static AppRouter<WebAppProps<NestedMainAppBuilder>>,
-    app_state: &'static WebAppState,
-    config: &'static Config<Duration>,
-    spawner: Spawner,
-    web_server_commands: &'static WebServerCommands,
-    tls: TlsReference<'static>,
+    generic_runner: GenericRunner<WebAppBuilder<NestedMainAppBuilder>,WebAppState>
 }
 
-impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> Runner<NestedMainAppBuilder> {
-    pub fn new(framework: Rc<RefCell<Framework>>, app_props: &'static AppRouter<WebAppProps<NestedMainAppBuilder>>, app_state: &'static WebAppState, spawner: Spawner, web_server_commands: &'static WebServerCommands, tls: TlsReference<'static>,) -> Self {
-        let config = crate::mk_static!(
-            picoserve::Config<Duration>,
-            picoserve::Config::new(picoserve::Timeouts {
-                start_read_request: Some(Duration::from_secs(5)),
-                read_request: Some(Duration::from_millis(5000)),
-                write: Some(Duration::from_millis(5000)),
-            })
-            .keep_connection_alive()
+impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> WebAppRunner<NestedMainAppBuilder> {
+    pub fn new(
+        framework: Rc<RefCell<Framework>>,
+        app_router: &'static AppRouter<WebAppBuilder<NestedMainAppBuilder>>,
+        app_state: &'static WebAppState,
+        config: Config<Duration>,
+    ) -> Self {
+        let web_server_config = WebServerConfig {
+            web_app_name: "Web-Config",
+            port: framework.borrow().settings.web_server_port,
+            tls: framework.borrow().settings.web_server_https,
+            tls_certificate: framework.borrow().settings.web_server_tls_certificate,
+            tls_private_key: framework.borrow().settings.web_server_tls_private_key,
+        };
+        let generic_runner = GenericRunner::<WebAppBuilder<NestedMainAppBuilder>,WebAppState>::new(
+            framework.clone(),
+            web_server_config,
+            app_router,
+            app_state,
+            framework.borrow().web_server_commands,
+            config.clone(),
         );
 
         let myself = Self {
-            framework,
-            app_props,
-            app_state,
-            config,
-            spawner,
-            web_server_commands,
-            tls,
+            framework: framework.clone(),
+            generic_runner,
         };
 
-        myself.start();
+        myself.start_captive_if_needed(); // TODO: why is it here and not in run()?
 
         myself
     }
 
-    pub async fn run(&self, id:usize) {
-        web_task(self.framework.clone(), id, self.app_props, self.config, self.web_server_commands.subscriber().unwrap(), self.tls, self.app_state).await;
+    pub async fn run(&self, id: usize) {
+        self.generic_runner.run(id).await;
     }
 
-    fn start(&self) {
+    fn start_captive_if_needed(&self) {
         debug!("runner::start called");
         // Need a standalone captive task if on https, or port that isn't 80 and if setting require captive in the first place
         #[allow(unused_assignments)]
         let mut need_standalone_captive = false;
-        if self.framework.borrow().settings.web_server_https || (self.framework.borrow().settings.web_server_port != 80) {
+        if self.framework.borrow().settings.web_server_https
+            || (self.framework.borrow().settings.web_server_port != 80)
+        {
             need_standalone_captive = true;
         }
 
@@ -80,30 +81,115 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> Runner<NestedMainApp
             need_standalone_captive = false;
         }
 
+        let spawner = self.framework.borrow().spawner;
+        let web_server_commands = self.framework.borrow().web_server_commands;
+        let web_app_domain = self.framework.borrow().settings.web_app_domain;
+
         if need_standalone_captive {
-            self.spawner
+            spawner
                 .spawn(standalone_captive_redirect_listen_and_serve_task(
-                    self.web_server_commands.subscriber().unwrap(),
-                    self.framework.borrow().settings.web_app_domain,
+                    web_server_commands.subscriber().unwrap(),
+                    web_app_domain.to_string(),
                 ))
                 .unwrap();
         }
     }
 }
 
-async fn web_task<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder>(
-    framework: Rc<RefCell<Framework>>, // TODO: Can move tasks into runner and have access to it's framework member
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Generic Web Application Runner - To be used for generic web applications (on unconflicting ports with Web Config)
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+pub struct GenericRunner<GenericAppProps, GenericAppState>
+where
+    // GenericAppBuilder : AppWithStateBuilder + 'static,
+    GenericAppProps: AppWithStateBuilder + 'static,
+    GenericAppState: 'static
+{
+    web_server_config: WebServerConfig,
+    app_router: &'static AppRouter<GenericAppProps>,
+    app_state: &'static GenericAppState,
+    config: Config<Duration>,
+    web_server_commands: &'static WebServerCommands,
+    tls: TlsReference<'static>,
+}
+
+impl<GenericAppProps, GenericAppState> GenericRunner<GenericAppProps, GenericAppState> 
+where
+    GenericAppProps: AppWithStateBuilder<State = GenericAppState> + 'static,
+    GenericAppState: 'static
+{
+    pub fn new(
+        framework: Rc<RefCell<Framework>>,
+        web_server_config: WebServerConfig,
+        app_router: &'static AppRouter<GenericAppProps>,
+        app_state: &'static GenericAppState,
+        web_server_commands: &'static WebServerCommands,
+        config: Config<Duration>
+    ) -> Self {
+        let myself = Self {
+            web_server_config,
+            app_router,
+            app_state,
+            config,
+            web_server_commands,
+            tls: framework.borrow().tls,
+        };
+
+        myself
+    }
+
+    pub async fn run(&self, id: usize) {
+        info!("Starting {} Web Application on port {}", self.web_server_config.web_app_name, self.web_server_config.port);
+        web_task::<GenericAppProps, GenericAppState>(
+            self.web_server_config.clone(),
+            id,
+            self.app_router,
+            &self.config,
+            self.web_server_commands.subscriber().unwrap(),
+            self.tls,
+            self.app_state,
+        )
+        .await;
+    }
+
+}
+
+#[derive(Clone)]
+pub enum WebServerCommand {
+    Start(Stack<'static>),
+    Stop,
+}
+
+#[derive(Clone, Debug)]
+pub struct WebServerConfig {
+    pub web_app_name: &'static str,
+    pub port: u16,
+    pub tls: bool,
+    pub tls_certificate: &'static str,
+    pub tls_private_key: &'static str,
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Actual functions implementing all web server aspects
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+async fn web_task<GenericAppProps, GenericAppState>(
+    web_server_config: WebServerConfig,
     task_id: usize,
     // DHCP
-    app: &'static AppRouter<WebAppProps<NestedMainAppBuilder>>,
-    config: &'static picoserve::Config<Duration>,
+    app: &'static AppRouter<GenericAppProps>,
+    config: &picoserve::Config<Duration>,
     mut web_server_commands: WebServerSubscriber,
     tls: TlsReference<'static>,
-    state: &'static WebAppState,
-) {
+    state: &'static GenericAppState,
+) 
+where
+    GenericAppProps: AppWithStateBuilder<State = GenericAppState> + 'static,
+    GenericAppState: 'static
+{
     let mut command = None;
-
-    debug!("//// web_task {task_id} started");
 
     loop {
         if command.is_none() {
@@ -111,18 +197,20 @@ async fn web_task<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder>(
         }
         match command {
             Some(embassy_sync::pubsub::WaitResult::Lagged(_)) => command = None,
-            Some(embassy_sync::pubsub::WaitResult::Message(WebConfigCommand::Stop)) => {
+            Some(embassy_sync::pubsub::WaitResult::Message(WebServerCommand::Stop)) => {
                 command = None;
             }
-            Some(embassy_sync::pubsub::WaitResult::Message(WebConfigCommand::Start(stack))) => {
+            Some(embassy_sync::pubsub::WaitResult::Message(WebServerCommand::Start(stack))) => {
                 let res = select(
-                    my_listen_and_serve(framework.clone(), task_id, app, config, stack, tls, state),
+                    my_listen_and_serve(web_server_config.clone(), task_id, app, config, stack, tls, state),
                     web_server_commands.next_message_pure(),
                 )
                 .await;
                 command = match res {
                     embassy_futures::select::Either::First(_) => None,
-                    embassy_futures::select::Either::Second(command) => Some(WaitResult::Message(command)),
+                    embassy_futures::select::Either::Second(command) => {
+                        Some(WaitResult::Message(command))
+                    }
                 };
             }
             None => (),
@@ -133,7 +221,7 @@ async fn web_task<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder>(
 #[embassy_executor::task]
 async fn standalone_captive_redirect_listen_and_serve_task(
     mut web_server_commands: WebServerSubscriber,
-    web_app_domain: &'static str,
+    web_app_domain: String,
 ) {
     debug!("/// Captive started");
     let mut command = None;
@@ -144,18 +232,20 @@ async fn standalone_captive_redirect_listen_and_serve_task(
         }
         match command {
             Some(embassy_sync::pubsub::WaitResult::Lagged(_)) => command = None,
-            Some(embassy_sync::pubsub::WaitResult::Message(WebConfigCommand::Stop)) => {
+            Some(embassy_sync::pubsub::WaitResult::Message(WebServerCommand::Stop)) => {
                 command = None;
             }
-            Some(embassy_sync::pubsub::WaitResult::Message(WebConfigCommand::Start(stack))) => {
+            Some(embassy_sync::pubsub::WaitResult::Message(WebServerCommand::Start(stack))) => {
                 let res = select(
-                    standalone_captive_redirect_listen_and_serve(stack, web_app_domain),
+                    standalone_captive_redirect_listen_and_serve(stack, web_app_domain.clone()),
                     web_server_commands.next_message_pure(),
                 )
                 .await;
                 command = match res {
                     embassy_futures::select::Either::First(_) => None,
-                    embassy_futures::select::Either::Second(command) => Some(WaitResult::Message(command)),
+                    embassy_futures::select::Either::Second(command) => {
+                        Some(WaitResult::Message(command))
+                    }
                 };
             }
             None => (),
@@ -163,11 +253,15 @@ async fn standalone_captive_redirect_listen_and_serve_task(
     }
 }
 
-async fn standalone_captive_redirect_listen_and_serve(stack: embassy_net::Stack<'static>, web_app_domain: &'static str) {
+async fn standalone_captive_redirect_listen_and_serve(
+    stack: embassy_net::Stack<'static>,
+    web_app_domain: String,
+) {
     let port = 80;
     let mut tcp_rx_buffer = [0; 512];
     let mut tcp_tx_buffer = [0; 512];
-    let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut tcp_rx_buffer, &mut tcp_tx_buffer);
+    let mut socket =
+        embassy_net::tcp::TcpSocket::new(stack, &mut tcp_rx_buffer, &mut tcp_tx_buffer);
     loop {
         info!("Captive: listening on TCP:{}...", port);
 
@@ -201,21 +295,22 @@ async fn standalone_captive_redirect_listen_and_serve(stack: embassy_net::Stack<
     }
 }
 
-async fn my_listen_and_serve<P: routing::PathRouter<WebAppState>>(
-    framework: Rc<RefCell<Framework>>,
+async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericAppState>(
+    web_server_config: WebServerConfig,
     task_id: impl LogDisplay,
-    app: &Router<P, WebAppState>,
+    app: &Router<P, GenericAppState>,
     config: &Config<embassy_time::Duration>,
     stack: embassy_net::Stack<'static>,
     tls: TlsReference<'static>,
-    state: &WebAppState,
+    state: &GenericAppState,
 ) -> ! {
-    let port = framework.borrow().settings.web_server_port;
+    let port = web_server_config.port;
     let mut tcp_rx_buffer = [0u8; 1024];
     let mut tcp_tx_buffer = [0u8; 1024];
     let mut http_buffer = [0u8; 1024];
     loop {
-        let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut tcp_rx_buffer, &mut tcp_tx_buffer);
+        let mut socket =
+            embassy_net::tcp::TcpSocket::new(stack, &mut tcp_rx_buffer, &mut tcp_tx_buffer);
 
         info!("{}: Listening on TCP:{}...", task_id, port);
 
@@ -226,11 +321,14 @@ async fn my_listen_and_serve<P: routing::PathRouter<WebAppState>>(
 
         let remote_endpoint = socket.remote_endpoint();
 
-        info!("{}: Received connection from {:?}", task_id, remote_endpoint);
-        let certificate = framework.borrow().settings.web_server_tls_certificate;
-        let private_key = framework.borrow().settings.web_server_tls_private_key;
+        info!(
+            "{}: Received connection from {:?}",
+            task_id, remote_endpoint
+        );
+        let certificate = web_server_config.tls_certificate;
+        let private_key = web_server_config.tls_private_key;
 
-        if framework.borrow().settings.web_server_https {
+        if web_server_config.tls {
             let session = esp_mbedtls::asynch::Session::new(
                 socket,
                 Mode::Server,
@@ -249,14 +347,20 @@ async fn my_listen_and_serve<P: routing::PathRouter<WebAppState>>(
 
             match serve_with_state(app, config, &mut http_buffer, wrapper, state).await {
                 Ok(handled_requests_count) => {
-                    info!("{} requests handled from {:?}", handled_requests_count, remote_endpoint);
+                    info!(
+                        "{} requests handled from {:?}",
+                        handled_requests_count, remote_endpoint
+                    );
                 }
                 Err(err) => error!("{:?}", &err),
             }
         } else {
-            match serve_with_state(app, config, &mut http_buffer, socket, state).await {
+            match serve_with_state(app, &config, &mut http_buffer, socket, state).await {
                 Ok(handled_requests_count) => {
-                    info!("{} requests handled from {:?}", handled_requests_count, remote_endpoint);
+                    info!(
+                        "{} requests handled from {:?}",
+                        handled_requests_count, remote_endpoint
+                    );
                 }
                 Err(err) => error!("{:?}", &err),
             }
