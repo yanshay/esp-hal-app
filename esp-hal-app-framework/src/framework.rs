@@ -1,10 +1,14 @@
 use alloc::{format, rc::Rc, string::String, vec, vec::Vec};
+use embassy_time::Timer;
 use core::cell::RefCell;
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::Spawner;
 use embassy_futures::block_on;
 use embassy_net::Stack;
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, pubsub::{PubSubChannel, Publisher, Subscriber}};
+use embassy_sync::{
+    blocking_mutex::raw::NoopRawMutex,
+    pubsub::{PubSubChannel, Publisher, Subscriber},
+};
 use esp_mbedtls::TlsReference;
 use esp_storage::FlashStorage;
 
@@ -21,7 +25,7 @@ const DISPLAY_CONFIG_KEY: &str = "__display_";
 // calculation is as above, but to avoid generics going into embassy tasks, use here a number large enough, at very little cost in memory
 // Should be enough for the largest number per web application, since they use different instances, but this is the max number of listeners to control
 // Not nice, but good enough for now
-const WEB_SERVER_COMMANDS_LISTENERS: usize = 20; 
+const WEB_SERVER_COMMANDS_LISTENERS: usize = 20;
 
 #[derive(Clone, Copy)]
 pub enum WebConfigMode {
@@ -52,7 +56,7 @@ pub struct FrameworkSettings {
     pub ota_toml_filename: &'static str,
     pub ota_certs: &'static str,
 
-    pub ap_addr: (u8,u8,u8,u8),
+    pub ap_addr: (u8, u8, u8, u8),
 
     pub web_server_https: bool,
     pub web_server_port: u16,
@@ -71,10 +75,13 @@ pub struct FrameworkSettings {
     pub app_cargo_pkg_version: &'static str,
 }
 
-pub type WebServerCommands = PubSubChannel<NoopRawMutex, WebServerCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1,>;
+pub type WebServerCommands =
+    PubSubChannel<NoopRawMutex, WebServerCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1>;
 #[allow(dead_code)]
-pub type WebServerPublisher = Publisher<'static, NoopRawMutex, WebServerCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1>;
-pub type WebServerSubscriber = Subscriber<'static, NoopRawMutex, WebServerCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1>;
+pub type WebServerPublisher =
+    Publisher<'static, NoopRawMutex, WebServerCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1>;
+pub type WebServerSubscriber =
+    Subscriber<'static, NoopRawMutex, WebServerCommand, 2, WEB_SERVER_COMMANDS_LISTENERS, 1>;
 
 pub struct Framework {
     pub settings: FrameworkSettings,
@@ -89,7 +96,8 @@ pub struct Framework {
     pub display_dimming_timeout: u64,
     pub display_dimming_percent: u8,
     pub display_blackout_timeout: u64,
-    pub undim_display: &'static embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::NoopRawMutex, ()>,
+    pub undim_display:
+        &'static embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::NoopRawMutex, ()>,
 
     pub spawner: Spawner,
     pub stack: Stack<'static>,
@@ -108,13 +116,9 @@ impl Framework {
         stack: Stack<'static>,
         tls: TlsReference<'static>,
     ) -> Rc<RefCell<Self>> {
-
         Terminal::initialize();
 
-        let web_server_commands = crate::mk_static!(
-            WebServerCommands,
-            WebServerCommands::new()
-        );
+        let web_server_commands = crate::mk_static!(WebServerCommands, WebServerCommands::new());
 
         let undim_display = crate::mk_static!(
             embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::NoopRawMutex, ()>,
@@ -148,24 +152,42 @@ impl Framework {
 
     pub fn load_config_flash_then_toml(&mut self, toml_str: &str) -> Result<(), String> {
         // Start by lading from flash, SDCard if exist will override
-        if let Ok(Some(wifi_store)) = block_on(self.flash_map.borrow_mut().fetch(String::from(WIFI_CONFIG_KEY))) {
+        if let Ok(Some(wifi_store)) = block_on(
+            self.flash_map
+                .borrow_mut()
+                .fetch(String::from(WIFI_CONFIG_KEY)),
+        ) {
             if let Ok(wifi_config) = serde_json::from_str::<WifiConfig>(&wifi_store) {
                 self.wifi_ssid = wifi_config.ssid;
                 self.wifi_password = wifi_config.password;
             }
         }
 
-        if let Ok(Some(fixed_key_store)) = block_on(self.flash_map.borrow_mut().fetch(String::from(FIXED_CONFIG_KEY))) {
+        if let Ok(Some(fixed_key_store)) = block_on(
+            self.flash_map
+                .borrow_mut()
+                .fetch(String::from(FIXED_CONFIG_KEY)),
+        ) {
             if let Ok(fixed_key_config) = serde_json::from_str::<FixedKeyConfig>(&fixed_key_store) {
                 self.fixed_key = fixed_key_config.key;
             }
         }
 
-        if let Ok(Some(display_store)) = block_on(self.flash_map.borrow_mut().fetch(String::from(DISPLAY_CONFIG_KEY))) {
+        if let Ok(Some(display_store)) = block_on(
+            self.flash_map
+                .borrow_mut()
+                .fetch(String::from(DISPLAY_CONFIG_KEY)),
+        ) {
             if let Ok(display_config) = serde_json::from_str::<DisplayConfig>(&display_store) {
-                self.display_dimming_timeout = display_config.dimming_timeout.unwrap_or(self.display_dimming_timeout);
-                self.display_dimming_percent = display_config.dimming_percent.unwrap_or(self.display_dimming_percent);
-                self.display_blackout_timeout = display_config.blackout_timeout.unwrap_or(self.display_blackout_timeout);
+                self.display_dimming_timeout = display_config
+                    .dimming_timeout
+                    .unwrap_or(self.display_dimming_timeout);
+                self.display_dimming_percent = display_config
+                    .dimming_percent
+                    .unwrap_or(self.display_dimming_percent);
+                self.display_blackout_timeout = display_config
+                    .blackout_timeout
+                    .unwrap_or(self.display_blackout_timeout);
             }
         }
 
@@ -206,7 +228,10 @@ impl Framework {
                             self.display_dimming_timeout = display_dimming_timeout;
                         } else {
                             parse_errors = true;
-                            term_error!("config file format error at display dimming_timeout at line {}", line_num);
+                            term_error!(
+                                "config file format error at display dimming_timeout at line {}",
+                                line_num
+                            );
                         }
                     }
                     "display_dimming_percent" => {
@@ -214,7 +239,10 @@ impl Framework {
                             self.display_dimming_percent = display_dimming_percent;
                         } else {
                             parse_errors = true;
-                            term_error!("config file format error at display dimming_percent at line {}", line_num);
+                            term_error!(
+                                "config file format error at display dimming_percent at line {}",
+                                line_num
+                            );
                         }
                     }
                     "display_blackout_timeout" => {
@@ -222,7 +250,10 @@ impl Framework {
                             self.display_blackout_timeout = display_blackout_timeout;
                         } else {
                             parse_errors = true;
-                            term_error!("config file format error at display blackout_timeout at line {}", line_num);
+                            term_error!(
+                                "config file format error at display blackout_timeout at line {}",
+                                line_num
+                            );
                         }
                     }
                     _ => {
@@ -253,9 +284,20 @@ impl Framework {
         self.notify_webapp_url_update(web_config_url, ssid);
         // self.check_status_so_far();
     }
+    pub async fn wait_for_wifi(framework: &Rc<RefCell<Self>>) {
+        let stack = framework.borrow().stack;
+        loop {
+            if let Some(_config) = stack.config_v4() {
+                break;
+            }
+            Timer::after_millis(250).await;
+        }
+    }
 
     pub fn initialization_ok(&self) -> bool {
-        matches!(self.config_processed_ok, Some(true)) && self.wifi_ssid != None && self.wifi_password != None
+        matches!(self.config_processed_ok, Some(true))
+            && self.wifi_ssid != None
+            && self.wifi_password != None
     }
 
     #[allow(dead_code)]
@@ -263,32 +305,47 @@ impl Framework {
         matches!(self.wifi_ok, Some(true))
     }
 
-    // General 
+    // General
     pub fn reset_device(&self) {
         esp_hal::reset::software_reset();
     }
-    pub fn set_fixed_key(&mut self, key: &str) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
+    pub fn set_fixed_key(
+        &mut self,
+        key: &str,
+    ) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
         if key.is_empty() {
             self.fixed_key = None;
-            return embassy_futures::block_on(self.flash_map.borrow_mut().remove(String::from(FIXED_CONFIG_KEY)))
+            return embassy_futures::block_on(
+                self.flash_map
+                    .borrow_mut()
+                    .remove(String::from(FIXED_CONFIG_KEY)),
+            );
         } else {
             self.fixed_key = Some(String::from(key));
             let fixed_key_config = FixedKeyConfig {
                 key: Some(String::from(key)),
             };
             let fixed_key_store = serde_json::to_string(&fixed_key_config).unwrap();
-            return self.store(String::from(FIXED_CONFIG_KEY), fixed_key_store)
+            return self.store(String::from(FIXED_CONFIG_KEY), fixed_key_store);
         }
     }
 
     // Wifi
     pub fn erase_stored_wifi_credentials(&mut self) {
-        let _ = embassy_futures::block_on(self.flash_map.borrow_mut().remove(String::from(WIFI_CONFIG_KEY)));
+        let _ = embassy_futures::block_on(
+            self.flash_map
+                .borrow_mut()
+                .remove(String::from(WIFI_CONFIG_KEY)),
+        );
         self.wifi_ssid = None;
         self.wifi_password = None;
     }
 
-    pub fn set_wifi_credentials(&mut self, ssid: &str, password: &str) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
+    pub fn set_wifi_credentials(
+        &mut self,
+        ssid: &str,
+        password: &str,
+    ) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
         self.wifi_ssid = Some(String::from(ssid));
         self.wifi_password = Some(String::from(password));
 
@@ -306,13 +363,31 @@ impl Framework {
     pub fn update_firmware_ota(&self) {
         info!("Starting Firmware Upgrade Over the Air");
         self.spawner
-            .spawn(ota_task(self.settings.ota_domain, self.settings.ota_path, self.settings.ota_toml_filename, self.settings.ota_certs, self.stack, self.tls, OtaRequest::Update, self.framework.as_ref().unwrap().clone()))
+            .spawn(ota_task(
+                self.settings.ota_domain,
+                self.settings.ota_path,
+                self.settings.ota_toml_filename,
+                self.settings.ota_certs,
+                self.stack,
+                self.tls,
+                OtaRequest::Update,
+                self.framework.as_ref().unwrap().clone(),
+            ))
             .ok();
     }
     pub fn check_firmware_ota(&self) {
         info!("Checking Firmware Version Over the Air");
         self.spawner
-            .spawn(ota_task(self.settings.ota_domain, self.settings.ota_path, self.settings.ota_toml_filename, self.settings.ota_certs, self.stack, self.tls, OtaRequest::CheckVersion, self.framework.as_ref().unwrap().clone()))
+            .spawn(ota_task(
+                self.settings.ota_domain,
+                self.settings.ota_path,
+                self.settings.ota_toml_filename,
+                self.settings.ota_certs,
+                self.stack,
+                self.tls,
+                OtaRequest::CheckVersion,
+                self.framework.as_ref().unwrap().clone(),
+            ))
             .ok();
     }
 
@@ -345,20 +420,34 @@ impl Framework {
             let key = core::str::from_utf8(&buf).unwrap();
             key_to_use = key;
         }
-        self.encryption_key.replace(derive_key(key_to_use, salt, iterations));
-        self.web_server_commands.publisher().unwrap().publish_immediate(WebServerCommand::Start(stack));
+        self.encryption_key
+            .replace(derive_key(key_to_use, salt, iterations));
+        self.web_server_commands
+            .publisher()
+            .unwrap()
+            .publish_immediate(WebServerCommand::Start(stack));
         self.notify_web_config_started(key_to_use, mode);
     }
     pub fn stop_web_app(&self) {
-        self.web_server_commands.publisher().unwrap().publish_immediate(WebServerCommand::Stop);
+        self.web_server_commands
+            .publisher()
+            .unwrap()
+            .publish_immediate(WebServerCommand::Stop);
         self.notify_web_config_stopped();
     }
 
     // Flash Storage
-    pub fn store(&self, key: String, value: String) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
+    pub fn store(
+        &self,
+        key: String,
+        value: String,
+    ) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
         block_on(self.flash_map.borrow_mut().store(key, value))
     }
-    pub fn fetch(&self, key: String) -> Result<Option<String>, sequential_storage::Error<esp_storage::FlashStorageError>> {
+    pub fn fetch(
+        &self,
+        key: String,
+    ) -> Result<Option<String>, sequential_storage::Error<esp_storage::FlashStorageError>> {
         block_on(self.flash_map.borrow_mut().fetch(key))
     }
 
@@ -407,7 +496,9 @@ impl Framework {
     pub fn notify_ota_version_available(&self, version: &str, newer: bool) {
         for weak_observer in self.observers.iter() {
             let observer = weak_observer.upgrade().unwrap();
-            observer.borrow_mut().on_ota_version_available(version, newer);
+            observer
+                .borrow_mut()
+                .on_ota_version_available(version, newer);
         }
     }
     pub fn notify_ota_start(&self) {
@@ -441,7 +532,10 @@ impl Framework {
         }
     }
     pub fn notify_initialization_completed(&self, status: bool) {
-        debug!("Notified on Initialization Completed {}", self.observers.len());
+        debug!(
+            "Notified on Initialization Completed {}",
+            self.observers.len()
+        );
         for weak_observer in self.observers.iter() {
             let observer = weak_observer.upgrade().unwrap();
             observer.borrow_mut().on_initialization_completed(status);
