@@ -95,6 +95,39 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
                 }
             }),
         );
+
+        let framework_clone_post = framework.clone();
+        let router = router.route(
+            "/captive/api/fixed-key-config",
+            post(move |State(Encryption(key)): State<Encryption>, body: String| {
+                ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                    Ok(decrypted) => (StatusCode::OK, {
+                        match serde_json::from_str::<FixedKeyConfigDTO>(&decrypted) {
+                            Ok(fixed_key_config) => {
+                                match framework_clone_post
+                                    .borrow_mut()
+                                    .set_fixed_key(&fixed_key_config.key)
+                                {
+                                    Ok(_) => SetConfigResponseDTO { error_text: None }.ctr_encrypt(&key.borrow()),
+                                    Err(e) => SetConfigResponseDTO {
+                                        error_text: Some(format!("{e:?}")),
+                                    }
+                                    .ctr_encrypt(&key.borrow()),
+                                }
+                            }
+                            Err(e) => SetConfigResponseDTO {
+                                error_text: Some(format!("{e:?}")),
+                            }
+                            .ctr_encrypt(&key.borrow()),
+                        }
+                    }),
+                    Err(e) => {
+                        (StatusCode::FORBIDDEN, format!("Decryption Error: {e}"))
+                    }
+                })
+            }));
+
+        let framework_clone_post = framework.clone();
         let router = router.route(
             "/captive/api/wifi-config",
             post(move |State(Encryption(key)): State<Encryption>, body: String| {
