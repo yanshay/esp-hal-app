@@ -141,7 +141,6 @@ where
     }
 
     pub async fn run(&self, id: usize) {
-        info!("Starting {} Web Application on port {}", self.web_server_config.web_app_name, self.web_server_config.port);
         web_task::<GenericAppProps, GenericAppState>(
             self.web_server_config.clone(),
             id,
@@ -312,7 +311,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
         let mut socket =
             embassy_net::tcp::TcpSocket::new(stack, &mut tcp_rx_buffer, &mut tcp_tx_buffer);
 
-        info!("{}: Listening on TCP:{}...", task_id, port);
+        info!("{} {} Web Application: Listening on TCP port:{}...", web_server_config.web_app_name, task_id, port);
 
         if let Err(err) = socket.accept(port).await {
             warn!("{}: accept error: {:?}", task_id, err);
@@ -322,7 +321,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
         let remote_endpoint = socket.remote_endpoint();
 
         info!(
-            "{}: Received connection from {:?}",
+            "{}: Connected from {:?}",
             task_id, remote_endpoint
         );
         let certificate = web_server_config.tls_certificate;

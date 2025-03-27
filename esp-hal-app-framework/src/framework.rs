@@ -1,5 +1,6 @@
 use alloc::{format, rc::Rc, string::String, vec, vec::Vec};
 use embassy_time::Timer;
+use esp_hal::gpio::{AnyPin, GpioPin, Input, Pull};
 use core::cell::RefCell;
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::Spawner;
@@ -73,6 +74,8 @@ pub struct FrameworkSettings {
 
     pub app_cargo_pkg_name: &'static str,
     pub app_cargo_pkg_version: &'static str,
+
+    pub default_fixed_security_key: Option<String>,
 }
 
 pub type WebServerCommands =
@@ -115,6 +118,7 @@ impl Framework {
         spawner: Spawner,
         stack: Stack<'static>,
         tls: TlsReference<'static>,
+        erase_wifi_key_settings_and_restart_gpio: Option<AnyPin>,
     ) -> Rc<RefCell<Self>> {
         Terminal::initialize();
 
@@ -124,15 +128,15 @@ impl Framework {
             embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::NoopRawMutex, ()>,
             embassy_sync::signal::Signal::<embassy_sync::blocking_mutex::raw::NoopRawMutex, ()>::new()
         );
+
         let framework = Self {
-            settings,
+            fixed_key: settings.default_fixed_security_key.clone(),
             observers: Vec::new(),
             framework: None,
             flash_map,
             web_server_commands,
             wifi_ssid: None,
             wifi_password: None,
-            fixed_key: None,
             display_dimming_timeout: 60 * 2,
             display_dimming_percent: 10,
             display_blackout_timeout: 60 * 5,
@@ -143,11 +147,16 @@ impl Framework {
             undim_display,
             config_processed_ok: None,
             wifi_ok: None,
+            settings,
         };
         let framework = Rc::new(RefCell::new(framework));
+
+        if let Some(gpio) = erase_wifi_key_settings_and_restart_gpio {
+            spawner.spawn(button_erase_wifi_key_and_restart_handler(gpio, framework.clone())).ok();
+        }
+
         framework.borrow_mut().framework = Some(framework.clone());
-        let borrowed_framework = framework.borrow();
-        borrowed_framework.framework.as_ref().unwrap().clone()
+        framework
     }
 
     pub fn load_config_flash_then_toml(&mut self, toml_str: &str) -> Result<(), String> {
@@ -284,6 +293,8 @@ impl Framework {
         self.notify_webapp_url_update(web_config_url, ssid);
         // self.check_status_so_far();
     }
+
+    // not on self, since async across borrow on framework would most probably panic
     pub async fn wait_for_wifi(framework: &Rc<RefCell<Self>>) {
         let stack = framework.borrow().stack;
         loop {
@@ -309,6 +320,8 @@ impl Framework {
     pub fn reset_device(&self) {
         esp_hal::reset::software_reset();
     }
+
+    // Fixed Security Key
     pub fn set_fixed_key(
         &mut self,
         key: &str,
@@ -328,6 +341,14 @@ impl Framework {
             let fixed_key_store = serde_json::to_string(&fixed_key_config).unwrap();
             return self.store(String::from(FIXED_CONFIG_KEY), fixed_key_store);
         }
+    }
+    pub fn erase_stored_fixed_key(&mut self) {
+        let _ = embassy_futures::block_on(
+            self.flash_map
+                .borrow_mut()
+                .remove(String::from(FIXED_CONFIG_KEY)),
+        );
+        self.fixed_key = self.settings.default_fixed_security_key.clone();
     }
 
     // Wifi
@@ -560,4 +581,18 @@ pub trait FrameworkObserver {
     fn on_web_config_started(&self, key: &str, mode: WebConfigMode);
     fn on_web_config_stopped(&self);
     fn on_wifi_sta_connected(&self);
+}
+
+#[embassy_executor::task]
+pub async fn button_erase_wifi_key_and_restart_handler(boot_gpio: AnyPin, framework: Rc<RefCell<Framework>>) {
+    info!("Boot button handler to reset wifi & security key settings installed");
+    let mut boot_pin = Input::new(boot_gpio, Pull::None);
+    loop {
+        boot_pin.wait_for_low().await;
+        boot_pin.wait_for_high().await;
+        debug!("Boot Pin pressed");
+        framework.borrow_mut().erase_stored_wifi_credentials();
+        framework.borrow_mut().erase_stored_fixed_key();
+        framework.borrow().reset_device();
+    }
 }
