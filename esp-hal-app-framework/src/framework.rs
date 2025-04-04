@@ -471,6 +471,12 @@ impl Framework {
     ) -> Result<Option<String>, sequential_storage::Error<esp_storage::FlashStorageError>> {
         block_on(self.flash_map.borrow_mut().fetch(key))
     }
+    pub fn remove(
+        &self,
+        key: String,    
+    ) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
+        block_on(self.flash_map.borrow_mut().remove(key))
+    }
 
     // Display
     pub fn set_display_settings(
