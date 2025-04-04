@@ -1,6 +1,6 @@
 use alloc::{format, rc::Rc, string::String, vec, vec::Vec};
 use embassy_time::Timer;
-use esp_hal::gpio::{AnyPin, GpioPin, Input, Pull};
+use esp_hal::gpio::{AnyPin, Input, Pull};
 use core::cell::RefCell;
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::Spawner;
@@ -19,7 +19,8 @@ use super::{
 use crate::{ota::OtaRequest, web_server::WebServerCommand};
 
 const WIFI_CONFIG_KEY: &str = "__wifi__";
-const FIXED_CONFIG_KEY: &str = "__fixed_key__";
+const FIXED_KEY_CONFIG_KEY: &str = "__fixed_key__";
+const DEVICE_NAME_CONFIG_KEY: &str = "__device_name__";
 const DISPLAY_CONFIG_KEY: &str = "__display_";
 // const WEB_SERVER_COMMANDS_LISTENERS: usize = WEB_SERVER_NUM_LISTENERS + 1 + 1; // web_server listeners + potentially https captive if on https + 1 for use by app_config to monitor if required to behave accordingly
 
@@ -42,6 +43,11 @@ pub struct WifiConfig {
 #[derive(serde::Deserialize, serde::Serialize)]
 pub struct FixedKeyConfig {
     pub key: Option<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct DeviceNameConfig {
+    pub name: Option<String>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -95,6 +101,7 @@ pub struct Framework {
     pub wifi_ssid: Option<String>,
     pub wifi_password: Option<String>,
     pub fixed_key: Option<String>,
+    pub device_name: Option<String>,
 
     pub display_dimming_timeout: u64,
     pub display_dimming_percent: u8,
@@ -131,6 +138,7 @@ impl Framework {
 
         let framework = Self {
             fixed_key: settings.default_fixed_security_key.clone(),
+            device_name: None,
             observers: Vec::new(),
             framework: None,
             flash_map,
@@ -175,10 +183,20 @@ impl Framework {
         if let Ok(Some(fixed_key_store)) = block_on(
             self.flash_map
                 .borrow_mut()
-                .fetch(String::from(FIXED_CONFIG_KEY)),
+                .fetch(String::from(FIXED_KEY_CONFIG_KEY)),
         ) {
             if let Ok(fixed_key_config) = serde_json::from_str::<FixedKeyConfig>(&fixed_key_store) {
                 self.fixed_key = fixed_key_config.key;
+            }
+        }
+
+        if let Ok(Some(device_name_store)) = block_on(
+            self.flash_map
+                .borrow_mut()
+                .fetch(String::from(DEVICE_NAME_CONFIG_KEY)),
+        ) {
+            if let Ok(device_name_config) = serde_json::from_str::<DeviceNameConfig>(&device_name_store) {
+                self.device_name = device_name_config.name;
             }
         }
 
@@ -231,6 +249,9 @@ impl Framework {
                     "wifi_password" => self.wifi_password = Some(String::from(value)),
                     "fixed_key" => {
                         self.fixed_key = Some(String::from(value));
+                    }
+                    "device_name" => {
+                        self.device_name = Some(String::from(value));
                     }
                     "display_dimming_timeout" => {
                         if let Ok(display_dimming_timeout) = value.parse::<u64>() {
@@ -331,7 +352,7 @@ impl Framework {
             return embassy_futures::block_on(
                 self.flash_map
                     .borrow_mut()
-                    .remove(String::from(FIXED_CONFIG_KEY)),
+                    .remove(String::from(FIXED_KEY_CONFIG_KEY)),
             );
         } else {
             self.fixed_key = Some(String::from(key));
@@ -339,16 +360,39 @@ impl Framework {
                 key: Some(String::from(key)),
             };
             let fixed_key_store = serde_json::to_string(&fixed_key_config).unwrap();
-            return self.store(String::from(FIXED_CONFIG_KEY), fixed_key_store);
+            return self.store(String::from(FIXED_KEY_CONFIG_KEY), fixed_key_store);
         }
     }
     pub fn erase_stored_fixed_key(&mut self) {
         let _ = embassy_futures::block_on(
             self.flash_map
                 .borrow_mut()
-                .remove(String::from(FIXED_CONFIG_KEY)),
+                .remove(String::from(FIXED_KEY_CONFIG_KEY)),
         );
         self.fixed_key = self.settings.default_fixed_security_key.clone();
+    }
+
+    // Device Name
+
+    pub fn set_device_name(
+        &mut self,
+        name: &str,
+    ) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
+        if name.is_empty() {
+            self.device_name = None;
+            return embassy_futures::block_on(
+                self.flash_map
+                    .borrow_mut()
+                    .remove(String::from(DEVICE_NAME_CONFIG_KEY)),
+            );
+        } else {
+            self.device_name = Some(String::from(name));
+            let device_name_config = DeviceNameConfig {
+                name: Some(String::from(name)),
+            };
+            let device_name_store = serde_json::to_string(&device_name_config).unwrap();
+            return self.store(String::from(DEVICE_NAME_CONFIG_KEY), device_name_store);
+        }
     }
 
     // Wifi

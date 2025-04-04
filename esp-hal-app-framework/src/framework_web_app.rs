@@ -73,8 +73,6 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
 
         // Captive portal parts ///////////////////////////////////////////////////////////////////////////////////////
 
-        let framework_clone_post = framework.clone();
-        let framework_clone_get = framework.clone();
         let router = router
             .route(
                 "/crypto-js-4.2.0.min.js",
@@ -128,6 +126,7 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
             }));
 
         let framework_clone_post = framework.clone();
+        let framework_clone_get = framework.clone();
         let router = router.route(
             "/captive/api/wifi-config",
             post(move |State(Encryption(key)): State<Encryption>, body: String| {
@@ -177,6 +176,53 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
                 )
             }),
         );
+
+        let framework_clone_post = framework.clone();
+        let framework_clone_get = framework.clone();
+        let router = router.route(
+            "/captive/api/device-name-config",
+            post(move |State(Encryption(key)): State<Encryption>, body: String| {
+                ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                    Ok(decrypted) => (StatusCode::OK, {
+                        match serde_json::from_str::<DeviceNameDTO>(&decrypted) {
+                            Ok(device_name_config) => {
+                                match framework_clone_post
+                                    .borrow_mut()
+                                    .set_device_name(&device_name_config.name)
+                                {
+                                    Ok(_) => SetConfigResponseDTO { error_text: None }.ctr_encrypt(&key.borrow()),
+                                    Err(e) => SetConfigResponseDTO {
+                                        error_text: Some(format!("{e:?}")),
+                                    }
+                                    .ctr_encrypt(&key.borrow()),
+                                }
+                            }
+                            Err(e) => SetConfigResponseDTO {
+                                error_text: Some(format!("{e:?}")),
+                            }
+                            .ctr_encrypt(&key.borrow()),
+                        }
+                    }),
+                    Err(e) => {
+                        (StatusCode::FORBIDDEN, format!("Decryption Error: {e}"))
+                    }
+                })
+            })
+            .get(move |State(Encryption(key)): State<Encryption>| {
+                ready(
+                    DeviceNameDTO {
+                        name: framework_clone_get
+                            .borrow()
+                            .device_name
+                            .as_ref()
+                            .unwrap_or(&String::from(""))
+                            .clone(),
+                    }
+                    .ctr_encrypt(&key.borrow()),
+                )
+            }),
+        );
+
         let framework_clone = framework.clone();
         let router = router.route(
             "/captive/api/reset-device",
@@ -247,6 +293,34 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
                         password: framework_clone_get
                             .borrow()
                             .wifi_password
+                            .as_ref()
+                            .unwrap_or(&String::from(""))
+                            .clone(),
+                    }
+                    .encrypt(&key.borrow()),
+                )
+            }),
+        );
+
+        let framework_clone_post = framework.clone();
+        let framework_clone_get = framework.clone();
+        let router = router.route(
+            "/api/device-name-config",
+            post(move |State(Encryption(key)): State<Encryption>, DeviceNameDTO { name }| {
+                ready(match framework_clone_post.borrow_mut().set_device_name(&name) {
+                    Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
+                    Err(e) => SetConfigResponseDTO {
+                        error_text: Some(format!("{e:?}")),
+                    }
+                    .encrypt(&key.borrow()),
+                })
+            })
+            .get(move |State(Encryption(key)): State<Encryption>| {
+                ready(
+                    DeviceNameDTO {
+                        name: framework_clone_get
+                            .borrow()
+                            .device_name
                             .as_ref()
                             .unwrap_or(&String::from(""))
                             .clone(),
@@ -385,6 +459,13 @@ struct WifiConfigDTO {
 }
 encrypted_input!(WifiConfigDTO);
 impl EncryptableCTR for WifiConfigDTO {}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct DeviceNameDTO {
+    name: String,
+}
+encrypted_input!(DeviceNameDTO);
+impl EncryptableCTR for DeviceNameDTO {}
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct ResetDeviceDTO {}
