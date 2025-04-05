@@ -86,6 +86,7 @@ edge-dhcp = "0.5.0"
 edge-nal = "0.5.0"
 edge-captive = "0.5.0"
 edge-http = "0.5.0"
+edge-mdns = "0.5.0"
 # picoserve = {version = "0.14.1", git = "https://github.com/sammhicks/picoserve", rev = "5d40ea410efa4c2e313cfaa19f62f844ece1fd55", features = ["alloc", "embassy"] }
 picoserve = {version = "0.15.1", features = ["alloc", "embassy"] }
 

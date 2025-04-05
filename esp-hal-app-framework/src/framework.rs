@@ -16,7 +16,7 @@ use esp_storage::FlashStorage;
 use super::{
     flash_map::FlashMap, framework_web_app::derive_key, ota::ota_task, terminal::Terminal,
 };
-use crate::{ota::OtaRequest, web_server::WebServerCommand};
+use crate::{ota::OtaRequest, web_server::WebServerCommand, wifi::mdns_task};
 
 const WIFI_CONFIG_KEY: &str = "__wifi__";
 const FIXED_KEY_CONFIG_KEY: &str = "__fixed_key__";
@@ -82,6 +82,7 @@ pub struct FrameworkSettings {
     pub app_cargo_pkg_version: &'static str,
 
     pub default_fixed_security_key: Option<String>,
+    pub mdns: bool,
 }
 
 pub type WebServerCommands =
@@ -301,6 +302,15 @@ impl Framework {
             }
         }
         self.config_processed_ok = Some(true);
+         
+        if self.settings.mdns {
+            if self.device_name.is_some() {
+                self.spawner.spawn(mdns_task(self.framework.as_ref().unwrap().clone())).ok();
+            } else {
+                warn!("mDNS not activated - device name not configured");
+            }
+        }
+
         Ok(())
     }
 
