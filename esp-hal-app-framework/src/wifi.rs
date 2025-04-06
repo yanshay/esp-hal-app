@@ -91,11 +91,7 @@ pub async fn connection(
         let framework_borrow = framework.borrow();
         framework_borrow.start_web_app(ap_stack, WebConfigMode::AP);
         drop(framework_borrow);
-        framework.borrow_mut().report_wifi(
-            true,
-            &format!("{prefix}://{}.{}.{}.{} or {prefix}://config", ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3,),
-            app_cargo_pkg_name,
-        );
+        framework.borrow_mut().report_wifi( Some(Ipv4Addr::new(ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3)), true, app_cargo_pkg_name);
 
         term_info!("WiFi Credentions not Configured.");
         term_info!("Provide WiFi credentials using either:");
@@ -362,7 +358,7 @@ pub async fn connection(
                     if let Some(config) = sta_stack.config_v4() {
                         term_info!("Received IP: {}", config.address);
                         framework.borrow_mut()
-                            .report_wifi(true, &format!("{prefix}://{}", config.address.address()), &ssid);
+                            .report_wifi(Some(config.address.address()), false, &ssid);
                         if improv_wifi_bootstrap {
                             // ignore warning, it's wrong, there's a drop below
                             let res = framework.borrow_mut().set_wifi_credentials(&ssid, &password); // need to be on separate line (due to borrowing)

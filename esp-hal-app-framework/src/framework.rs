@@ -1,7 +1,5 @@
 use alloc::{format, rc::Rc, string::String, vec, vec::Vec};
-use embassy_time::Timer;
-use esp_hal::gpio::{AnyPin, Input, Pull};
-use core::cell::RefCell;
+use core::{cell::RefCell, net::Ipv4Addr};
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::Spawner;
 use embassy_futures::block_on;
@@ -10,6 +8,8 @@ use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     pubsub::{PubSubChannel, Publisher, Subscriber},
 };
+use embassy_time::Timer;
+use esp_hal::gpio::{AnyPin, Input, Pull};
 use esp_mbedtls::TlsReference;
 use esp_storage::FlashStorage;
 
@@ -161,7 +161,12 @@ impl Framework {
         let framework = Rc::new(RefCell::new(framework));
 
         if let Some(gpio) = erase_wifi_key_settings_and_restart_gpio {
-            spawner.spawn(button_erase_wifi_key_and_restart_handler(gpio, framework.clone())).ok();
+            spawner
+                .spawn(button_erase_wifi_key_and_restart_handler(
+                    gpio,
+                    framework.clone(),
+                ))
+                .ok();
         }
 
         framework.borrow_mut().framework = Some(framework.clone());
@@ -196,7 +201,9 @@ impl Framework {
                 .borrow_mut()
                 .fetch(String::from(DEVICE_NAME_CONFIG_KEY)),
         ) {
-            if let Ok(device_name_config) = serde_json::from_str::<DeviceNameConfig>(&device_name_store) {
+            if let Ok(device_name_config) =
+                serde_json::from_str::<DeviceNameConfig>(&device_name_store)
+            {
                 self.device_name = device_name_config.name;
             }
         }
@@ -302,10 +309,12 @@ impl Framework {
             }
         }
         self.config_processed_ok = Some(true);
-         
+
         if self.settings.mdns {
             if self.device_name.is_some() {
-                self.spawner.spawn(mdns_task(self.framework.as_ref().unwrap().clone())).ok();
+                self.spawner
+                    .spawn(mdns_task(self.framework.as_ref().unwrap().clone()))
+                    .ok();
             } else {
                 warn!("mDNS not activated - device name not configured");
             }
@@ -314,26 +323,42 @@ impl Framework {
         Ok(())
     }
 
-    pub fn report_wifi(&mut self, status: bool, url: &str, ssid: &str) {
-        let web_config_ip_url = if status {
-            url
-        } else {
-            "N/A - WiFi not connected"
-        };
-        
-        let web_config_name_url = if let Some(device_name) = &self.device_name {
-            if self.settings.mdns {
-                let prefix = if self.settings.web_server_https { "https" } else { "http" };
-                Some(format!("{prefix}://{device_name}.local"))
+    pub fn report_wifi(&mut self, ip: Option<Ipv4Addr>, captive: bool, ssid: &str) {
+        if let Some(ip) = ip {
+            let port = if [80u16, 443].contains(&self.settings.web_server_port) {
+                ""
             } else {
-                None
-            }
+                &format!(":{}", self.settings.web_server_port)
+            };
+            let prefix = if self.settings.web_server_https {
+                "https://"
+            } else {
+                "http://"
+            };
+
+            let web_config_ip_url = format!("{prefix}{ip}{port}");
+
+            let web_config_name_url = match captive {
+                true => Some(format!("{prefix}config{port}")),
+                false => {
+                    if let Some(device_name) = &self.device_name {
+                        if self.settings.mdns {
+                            Some(format!("{prefix}{device_name}.local{port}"))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+            let web_config_name_url = web_config_name_url.as_ref().map(|v| v.as_str());
+            self.wifi_ok = Some(true);
+            self.notify_webapp_url_update(&web_config_ip_url, web_config_name_url, ssid);
         } else {
-            None
-        };
-        let web_config_name_url = web_config_name_url.as_ref().map(|v| v.as_str());
-        self.wifi_ok = Some(status);
-        self.notify_webapp_url_update(web_config_ip_url, web_config_name_url, ssid);
+            self.wifi_ok = Some(false);
+            self.notify_webapp_url_update("N/A - WiFi not connected", None, ssid);
+        }
         // self.check_status_so_far();
     }
 
@@ -539,7 +564,7 @@ impl Framework {
     }
     pub fn remove(
         &self,
-        key: String,    
+        key: String,
     ) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
         block_on(self.flash_map.borrow_mut().remove(key))
     }
@@ -637,7 +662,9 @@ impl Framework {
     pub fn notify_webapp_url_update(&self, ip_url: &str, name_url: Option<&str>, ssid: &str) {
         for weak_observer in self.observers.iter() {
             let observer = weak_observer.upgrade().unwrap();
-            observer.borrow_mut().on_webapp_url_update(ip_url, name_url, ssid);
+            observer
+                .borrow_mut()
+                .on_webapp_url_update(ip_url, name_url, ssid);
         }
     }
 }
@@ -656,7 +683,10 @@ pub trait FrameworkObserver {
 }
 
 #[embassy_executor::task]
-pub async fn button_erase_wifi_key_and_restart_handler(boot_gpio: AnyPin, framework: Rc<RefCell<Framework>>) {
+pub async fn button_erase_wifi_key_and_restart_handler(
+    boot_gpio: AnyPin,
+    framework: Rc<RefCell<Framework>>,
+) {
     info!("Boot button handler to reset wifi & security key settings installed");
     let mut boot_pin = Input::new(boot_gpio, Pull::None);
     loop {
