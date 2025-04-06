@@ -315,13 +315,25 @@ impl Framework {
     }
 
     pub fn report_wifi(&mut self, status: bool, url: &str, ssid: &str) {
-        let web_config_url = if status {
+        let web_config_ip_url = if status {
             url
         } else {
             "N/A - WiFi not connected"
         };
+        
+        let web_config_name_url = if let Some(device_name) = &self.device_name {
+            if self.settings.mdns {
+                let prefix = if self.settings.web_server_https { "https" } else { "http" };
+                Some(format!("{prefix}://{device_name}.local"))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let web_config_name_url = web_config_name_url.as_ref().map(|v| v.as_str());
         self.wifi_ok = Some(status);
-        self.notify_webapp_url_update(web_config_url, ssid);
+        self.notify_webapp_url_update(web_config_ip_url, web_config_name_url, ssid);
         // self.check_status_so_far();
     }
 
@@ -622,16 +634,16 @@ impl Framework {
             observer.borrow_mut().on_initialization_completed(status);
         }
     }
-    pub fn notify_webapp_url_update(&self, url: &str, ssid: &str) {
+    pub fn notify_webapp_url_update(&self, ip_url: &str, name_url: Option<&str>, ssid: &str) {
         for weak_observer in self.observers.iter() {
             let observer = weak_observer.upgrade().unwrap();
-            observer.borrow_mut().on_webapp_url_update(url, ssid);
+            observer.borrow_mut().on_webapp_url_update(ip_url, name_url, ssid);
         }
     }
 }
 
 pub trait FrameworkObserver {
-    fn on_webapp_url_update(&self, url: &str, ssid: &str);
+    fn on_webapp_url_update(&self, ip_url: &str, name_url: Option<&str>, ssid: &str);
     fn on_initialization_completed(&self, status: bool);
     fn on_ota_version_available(&self, version: &str, newer: bool);
     fn on_ota_start(&self);
