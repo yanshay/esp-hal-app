@@ -1,5 +1,10 @@
 use core::{cell::RefCell, future::ready};
 
+use aes::cipher::{KeyIvInit, StreamCipher};
+use aes_gcm::{
+    aead::{Aead, KeyInit, Payload},
+    Aes256Gcm, Key, Nonce,
+};
 use alloc::{
     format,
     rc::Rc,
@@ -7,26 +12,24 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+use hmac::{Hmac, Mac};
+use pbkdf2::pbkdf2_hmac;
 use picoserve::{
     extract::{FromRequest, State},
     io::Read,
     request::{RequestBody, RequestParts},
     response::{IntoResponse, Redirect, StatusCode},
-    routing::{get_service, post, PathRouter},
+    routing::{get, get_service, post, PathRouter},
     AppWithStateBuilder, ResponseSent,
 };
 use serde::{Deserialize, Serialize};
-use aes::cipher::{KeyIvInit, StreamCipher};
-use aes_gcm::{
-    aead::{Aead, KeyInit, Payload},
-    Aes256Gcm, Key, Nonce,
-};
-use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
-use hmac::{Hmac, Mac};
-use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 
-use crate::framework::Framework;
+use crate::{
+    framework::Framework,
+    ota::OtaRequest,
+};
 
 #[derive(Clone, Copy)]
 pub struct Encryption(pub &'static RefCell<Vec<u8>>);
@@ -37,7 +40,7 @@ pub struct WebAppState {
 impl WebAppState {
     pub fn new(key: &'static RefCell<Vec<u8>>) -> Self {
         Self {
-            encryption: Encryption(&key)
+            encryption: Encryption(&key),
         }
     }
 }
@@ -48,8 +51,7 @@ impl picoserve::extract::FromRef<WebAppState> for Encryption {
     }
 }
 
-pub trait NestedAppWithWebAppStateBuilder: AppWithStateBuilder<State = WebAppState>
-{
+pub trait NestedAppWithWebAppStateBuilder: AppWithStateBuilder<State = WebAppState> {
     fn path_description(&self) -> &'static str;
 }
 
@@ -58,10 +60,11 @@ pub struct WebAppBuilder<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> 
     pub framework: Rc<RefCell<Framework>>,
     pub captive_html: &'static str,
     pub web_app_html: &'static str,
-
 }
 
-impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder for WebAppBuilder<NestedMainAppBuilder> {
+impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder
+    for WebAppBuilder<NestedMainAppBuilder>
+{
     type State = WebAppState;
     type PathRouter = impl PathRouter<WebAppState>;
 
@@ -69,14 +72,19 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
         let framework = self.framework;
 
         let router = picoserve::Router::new();
-        let router = router.nest(self.app_builder.path_description(), self.app_builder.build_app());
+        let router = router.nest(
+            self.app_builder.path_description(),
+            self.app_builder.build_app(),
+        );
 
         // Captive portal parts ///////////////////////////////////////////////////////////////////////////////////////
 
         let router = router
             .route(
                 "/crypto-js-4.2.0.min.js",
-                get_service(picoserve::response::File::javascript(include_str!("./static/crypto-js-4.2.0.min.js"))),
+                get_service(picoserve::response::File::javascript(include_str!(
+                    "./static/crypto-js-4.2.0.min.js"
+                ))),
             )
             .route(
                 "/captive",
@@ -84,78 +92,83 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
             );
         let router = router.route(
             "/captive/api/test-key",
-            post(async move |State(Encryption(key)): State<Encryption>, body: String| {
-                // Order matter, state first, post data last
-                if let Ok(_decrypted) = ctr_decrypt(&key.borrow(), &body.as_bytes()) {
-                    (StatusCode::OK, "")
-                } else {
-                    (StatusCode::FORBIDDEN, "")
-                }
-            }),
+            post(
+                async move |State(Encryption(key)): State<Encryption>, body: String| {
+                    // Order matter, state first, post data last
+                    if let Ok(_decrypted) = ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                        (StatusCode::OK, "")
+                    } else {
+                        (StatusCode::FORBIDDEN, "")
+                    }
+                },
+            ),
         );
 
         let framework_clone_post = framework.clone();
         let router = router.route(
             "/captive/api/fixed-key-config",
-            post(move |State(Encryption(key)): State<Encryption>, body: String| {
-                ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
-                    Ok(decrypted) => (StatusCode::OK, {
-                        match serde_json::from_str::<FixedKeyConfigDTO>(&decrypted) {
-                            Ok(fixed_key_config) => {
-                                match framework_clone_post
-                                    .borrow_mut()
-                                    .set_fixed_key(&fixed_key_config.key)
-                                {
-                                    Ok(_) => SetConfigResponseDTO { error_text: None }.ctr_encrypt(&key.borrow()),
-                                    Err(e) => SetConfigResponseDTO {
-                                        error_text: Some(format!("{e:?}")),
+            post(
+                move |State(Encryption(key)): State<Encryption>, body: String| {
+                    ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                        Ok(decrypted) => (StatusCode::OK, {
+                            match serde_json::from_str::<FixedKeyConfigDTO>(&decrypted) {
+                                Ok(fixed_key_config) => {
+                                    match framework_clone_post
+                                        .borrow_mut()
+                                        .set_fixed_key(&fixed_key_config.key)
+                                    {
+                                        Ok(_) => SetConfigResponseDTO { error_text: None }
+                                            .ctr_encrypt(&key.borrow()),
+                                        Err(e) => SetConfigResponseDTO {
+                                            error_text: Some(format!("{e:?}")),
+                                        }
+                                        .ctr_encrypt(&key.borrow()),
                                     }
-                                    .ctr_encrypt(&key.borrow()),
                                 }
+                                Err(e) => SetConfigResponseDTO {
+                                    error_text: Some(format!("{e:?}")),
+                                }
+                                .ctr_encrypt(&key.borrow()),
                             }
-                            Err(e) => SetConfigResponseDTO {
-                                error_text: Some(format!("{e:?}")),
-                            }
-                            .ctr_encrypt(&key.borrow()),
-                        }
-                    }),
-                    Err(e) => {
-                        (StatusCode::FORBIDDEN, format!("Decryption Error: {e}"))
-                    }
-                })
-            }));
+                        }),
+                        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
+                    })
+                },
+            ),
+        );
 
         let framework_clone_post = framework.clone();
         let framework_clone_get = framework.clone();
         let router = router.route(
             "/captive/api/wifi-config",
-            post(move |State(Encryption(key)): State<Encryption>, body: String| {
-                ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
-                    Ok(decrypted) => (StatusCode::OK, {
-                        match serde_json::from_str::<WifiConfigDTO>(&decrypted) {
-                            Ok(wifi_config) => {
-                                match framework_clone_post
-                                    .borrow_mut()
-                                    .set_wifi_credentials(&wifi_config.ssid, &wifi_config.password)
-                                {
-                                    Ok(_) => SetConfigResponseDTO { error_text: None }.ctr_encrypt(&key.borrow()),
-                                    Err(e) => SetConfigResponseDTO {
-                                        error_text: Some(format!("{e:?}")),
+            post(
+                move |State(Encryption(key)): State<Encryption>, body: String| {
+                    ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                        Ok(decrypted) => (StatusCode::OK, {
+                            match serde_json::from_str::<WifiConfigDTO>(&decrypted) {
+                                Ok(wifi_config) => {
+                                    match framework_clone_post.borrow_mut().set_wifi_credentials(
+                                        &wifi_config.ssid,
+                                        &wifi_config.password,
+                                    ) {
+                                        Ok(_) => SetConfigResponseDTO { error_text: None }
+                                            .ctr_encrypt(&key.borrow()),
+                                        Err(e) => SetConfigResponseDTO {
+                                            error_text: Some(format!("{e:?}")),
+                                        }
+                                        .ctr_encrypt(&key.borrow()),
                                     }
-                                    .ctr_encrypt(&key.borrow()),
                                 }
+                                Err(e) => SetConfigResponseDTO {
+                                    error_text: Some(format!("{e:?}")),
+                                }
+                                .ctr_encrypt(&key.borrow()),
                             }
-                            Err(e) => SetConfigResponseDTO {
-                                error_text: Some(format!("{e:?}")),
-                            }
-                            .ctr_encrypt(&key.borrow()),
-                        }
-                    }),
-                    Err(e) => {
-                        (StatusCode::FORBIDDEN, format!("Decryption Error: {e}"))
-                    }
-                })
-            })
+                        }),
+                        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
+                    })
+                },
+            )
             .get(move |State(Encryption(key)): State<Encryption>| {
                 ready(
                     WifiConfigDTO {
@@ -181,33 +194,34 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
         let framework_clone_get = framework.clone();
         let router = router.route(
             "/captive/api/device-name-config",
-            post(move |State(Encryption(key)): State<Encryption>, body: String| {
-                ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
-                    Ok(decrypted) => (StatusCode::OK, {
-                        match serde_json::from_str::<DeviceNameDTO>(&decrypted) {
-                            Ok(device_name_config) => {
-                                match framework_clone_post
-                                    .borrow_mut()
-                                    .set_device_name(&device_name_config.name)
-                                {
-                                    Ok(_) => SetConfigResponseDTO { error_text: None }.ctr_encrypt(&key.borrow()),
-                                    Err(e) => SetConfigResponseDTO {
-                                        error_text: Some(format!("{e:?}")),
+            post(
+                move |State(Encryption(key)): State<Encryption>, body: String| {
+                    ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                        Ok(decrypted) => (StatusCode::OK, {
+                            match serde_json::from_str::<DeviceNameDTO>(&decrypted) {
+                                Ok(device_name_config) => {
+                                    match framework_clone_post
+                                        .borrow_mut()
+                                        .set_device_name(&device_name_config.name)
+                                    {
+                                        Ok(_) => SetConfigResponseDTO { error_text: None }
+                                            .ctr_encrypt(&key.borrow()),
+                                        Err(e) => SetConfigResponseDTO {
+                                            error_text: Some(format!("{e:?}")),
+                                        }
+                                        .ctr_encrypt(&key.borrow()),
                                     }
-                                    .ctr_encrypt(&key.borrow()),
                                 }
+                                Err(e) => SetConfigResponseDTO {
+                                    error_text: Some(format!("{e:?}")),
+                                }
+                                .ctr_encrypt(&key.borrow()),
                             }
-                            Err(e) => SetConfigResponseDTO {
-                                error_text: Some(format!("{e:?}")),
-                            }
-                            .ctr_encrypt(&key.borrow()),
-                        }
-                    }),
-                    Err(e) => {
-                        (StatusCode::FORBIDDEN, format!("Decryption Error: {e}"))
-                    }
-                })
-            })
+                        }),
+                        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
+                    })
+                },
+            )
             .get(move |State(Encryption(key)): State<Encryption>| {
                 ready(
                     DeviceNameDTO {
@@ -226,17 +240,21 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
         let framework_clone = framework.clone();
         let router = router.route(
             "/captive/api/reset-device",
-            post(move |State(Encryption(key)): State<Encryption>, body: String| {
-                ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
-                    Ok(_) => {
-                        framework_clone.borrow_mut().reset_device();
-                        (StatusCode::OK, SetConfigResponseDTO { error_text: None }.ctr_encrypt(&key.borrow()))
-                    }
-                    Err(e) => {
-                        (StatusCode::FORBIDDEN, format!("Decryption Error: {e}"))
-                    }
-                })
-            }),
+            post(
+                move |State(Encryption(key)): State<Encryption>, body: String| {
+                    ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                        Ok(_) => {
+                            framework_clone.borrow_mut().reset_device();
+                            (
+                                StatusCode::OK,
+                                SetConfigResponseDTO { error_text: None }
+                                    .ctr_encrypt(&key.borrow()),
+                            )
+                        }
+                        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
+                    })
+                },
+            ),
         );
 
         // Standard config parts //////////////////////////////////////////////////////////////////////////////////////
@@ -244,9 +262,10 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
             "/config",
             get_service(picoserve::response::File::html(self.web_app_html)),
         ); // main config page
-        
+
         let router = router
-            .route(     // wasm (for encrypt/decrypt)
+            .route(
+                // wasm (for encrypt/decrypt)
                 "/pkg/device_wasm_bg.wasm",
                 get_service(picoserve::response::File::with_content_type(
                     "application/wasm",
@@ -264,23 +283,33 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
         let framework_clone_get = framework.clone();
         let router = router.route(
             "/api/wifi-config",
-            post(move |State(Encryption(key)): State<Encryption>, WifiConfigDTO { ssid, password }| {
-                // NOTE: ready is used here, I'm not fully clear why it's required but it is.
-                // It has to do with the method not being async and th need to borrow together.
-                // If I do async then I get issue with borrowing moved data.
-                // If I don't do async no the result (which is not future) then I have issue with borrow.
-                // Could be that if key will not be borrowed, or if like with picoserve Json there will be
-                //   an impl of future to the result (then need something other than String),
-                // it will be solved.
-                // So if need async here, need to search for proper solution
-                ready(match framework_clone_post.borrow_mut().set_wifi_credentials(&ssid, &password) {
-                    Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
-                    Err(e) => SetConfigResponseDTO {
-                        error_text: Some(format!("{e:?}")),
-                    }
-                    .encrypt(&key.borrow()),
-                })
-            })
+            post(
+                move |State(Encryption(key)): State<Encryption>,
+                      WifiConfigDTO { ssid, password }| {
+                    // NOTE: ready is used here, I'm not fully clear why it's required but it is.
+                    // It has to do with the method not being async and th need to borrow together.
+                    // If I do async then I get issue with borrowing moved data.
+                    // If I don't do async no the result (which is not future) then I have issue with borrow.
+                    // Could be that if key will not be borrowed, or if like with picoserve Json there will be
+                    //   an impl of future to the result (then need something other than String),
+                    // it will be solved.
+                    // So if need async here, need to search for proper solution
+                    ready(
+                        match framework_clone_post
+                            .borrow_mut()
+                            .set_wifi_credentials(&ssid, &password)
+                        {
+                            Ok(_) => {
+                                SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
+                            }
+                            Err(e) => SetConfigResponseDTO {
+                                error_text: Some(format!("{e:?}")),
+                            }
+                            .encrypt(&key.borrow()),
+                        },
+                    )
+                },
+            )
             .get(move |State(Encryption(key)): State<Encryption>| {
                 ready(
                     WifiConfigDTO {
@@ -306,15 +335,21 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
         let framework_clone_get = framework.clone();
         let router = router.route(
             "/api/device-name-config",
-            post(move |State(Encryption(key)): State<Encryption>, DeviceNameDTO { name }| {
-                ready(match framework_clone_post.borrow_mut().set_device_name(&name) {
-                    Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
-                    Err(e) => SetConfigResponseDTO {
-                        error_text: Some(format!("{e:?}")),
-                    }
-                    .encrypt(&key.borrow()),
-                })
-            })
+            post(
+                move |State(Encryption(key)): State<Encryption>, DeviceNameDTO { name }| {
+                    ready(
+                        match framework_clone_post.borrow_mut().set_device_name(&name) {
+                            Ok(_) => {
+                                SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
+                            }
+                            Err(e) => SetConfigResponseDTO {
+                                error_text: Some(format!("{e:?}")),
+                            }
+                            .encrypt(&key.borrow()),
+                        },
+                    )
+                },
+            )
             .get(move |State(Encryption(key)): State<Encryption>| {
                 ready(
                     DeviceNameDTO {
@@ -333,10 +368,12 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
         let framework_clone = framework.clone();
         let router = router.route(
             "/api/reset-device",
-            post(move |State(Encryption(key)): State<Encryption>, ResetDeviceDTO {}| {
-                framework_clone.borrow_mut().reset_device();
-                ready(SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()))
-            }),
+            post(
+                move |State(Encryption(key)): State<Encryption>, ResetDeviceDTO {}| {
+                    framework_clone.borrow_mut().reset_device();
+                    ready(SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()))
+                },
+            ),
         );
 
         let framework_clone_post = framework.clone();
@@ -351,11 +388,14 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
                           blackout_timeout,
                       }| {
                     ready(
-                        match framework_clone_post
-                            .borrow_mut()
-                            .set_display_settings(dimming_timeout, dimming_percent, blackout_timeout)
-                        {
-                            Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
+                        match framework_clone_post.borrow_mut().set_display_settings(
+                            dimming_timeout,
+                            dimming_percent,
+                            blackout_timeout,
+                        ) {
+                            Ok(_) => {
+                                SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
+                            }
                             Err(e) => SetConfigResponseDTO {
                                 error_text: Some(format!("{e:?}")),
                             }
@@ -379,24 +419,63 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder 
 
         let router = router.route(
             "/api/test-key",
-            post(async move |State(Encryption(key)): State<Encryption>, TestKeyDTO { test: _test }| {
-                // Order matter, state first, post data last
-                TestKeyResponseDTO { error_text: None }.encrypt(&key.borrow())
-            }),
+            post(
+                async move |State(Encryption(key)): State<Encryption>,
+                            TestKeyDTO { test: _test }| {
+                    // Order matter, state first, post data last
+                    TestKeyResponseDTO { error_text: None }.encrypt(&key.borrow())
+                },
+            ),
         );
 
         let framework_clone_post = framework.clone();
         let router = router.route(
             "/api/fixed-key-config",
-            post(move |State(Encryption(key)): State<Encryption>, FixedKeyConfigDTO { key: fixed_key }| {
-                ready(match framework_clone_post.borrow_mut().set_fixed_key(&fixed_key) {
-                    Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
-                    Err(e) => SetConfigResponseDTO {
-                        error_text: Some(format!("{e:?}")),
+            post(
+                move |State(Encryption(key)): State<Encryption>,
+                      FixedKeyConfigDTO { key: fixed_key }| {
+                    ready(
+                        match framework_clone_post.borrow_mut().set_fixed_key(&fixed_key) {
+                            Ok(_) => {
+                                SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
+                            }
+                            Err(e) => SetConfigResponseDTO {
+                                error_text: Some(format!("{e:?}")),
+                            }
+                            .encrypt(&key.borrow()),
+                        },
+                    )
+                },
+            ),
+        );
+
+        let framework_clone_post = framework.clone();
+        let router = router.route(
+            "/api/ota-request",
+            post(
+                move |State(Encryption(key)): State<Encryption>, OtaRequestDTO { request }| {
+                    ready({
+                        framework_clone_post.borrow().submit_ota_request(request);
+                        SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
+                    })
+                },
+            ),
+        );
+
+        let framework_clone_get = framework.clone();
+        let router = router.route(
+            "/api/ota-config",
+            get(move |State(Encryption(key)): State<Encryption>| {
+                let framework = framework_clone_get.borrow();
+                ready(
+                    OtaStatusDTO {
+                        status: framework.ota_state.as_ref().map_or(String::new(), |s| s.to_string()),
+                        curr_ver: framework.settings.app_cargo_pkg_version.to_string(),
                     }
                     .encrypt(&key.borrow()),
-                })
-            }));
+                )
+            }),
+        );
 
         router
     }
@@ -407,7 +486,10 @@ pub struct CustomNotFound {
 }
 
 impl picoserve::routing::PathRouterService<WebAppState> for CustomNotFound {
-    async fn call_request_handler_service<R: picoserve::io::Read, W: picoserve::response::ResponseWriter<Error = R::Error>>(
+    async fn call_request_handler_service<
+        R: picoserve::io::Read,
+        W: picoserve::response::ResponseWriter<Error = R::Error>,
+    >(
         &self,
         _state: &WebAppState,
         _path_parameters: (),
@@ -442,11 +524,16 @@ macro_rules! encrypted_input {
                 _request_parts: RequestParts<'r>,
                 request_body: RequestBody<'r, R>,
             ) -> Result<Self, Self::Rejection> {
-                let encrypted_data = request_body.read_all().await.map_err(|_| EncryptedRejection::IoError)?;
+                let encrypted_data = request_body
+                    .read_all()
+                    .await
+                    .map_err(|_| EncryptedRejection::IoError)?;
                 let key = state.encryption.0;
-                let decrypted_data = decrypt(&key.borrow(), encrypted_data).map_err(|e| EncryptedRejection::DecryptionError(e))?;
+                let decrypted_data = decrypt(&key.borrow(), encrypted_data)
+                    .map_err(|e| EncryptedRejection::DecryptionError(e))?;
 
-                (serde_json::from_str(&decrypted_data) as Result<$type, _>).map_err(|e| EncryptedRejection::DeserializationError(e))
+                (serde_json::from_str(&decrypted_data) as Result<$type, _>)
+                    .map_err(|e| EncryptedRejection::DeserializationError(e))
             }
         }
     };
@@ -517,6 +604,18 @@ struct TestKeyResponseDTO {
     error_text: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct OtaRequestDTO {
+    request: OtaRequest,
+}
+encrypted_input!(OtaRequestDTO);
+
+#[derive(Serialize)]
+struct OtaStatusDTO {
+    status: String,
+    curr_ver: String,
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // AES-GCM Encryption ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -544,7 +643,11 @@ pub(crate) fn encrypt(key_bytes: &[u8], data: &str) -> String {
     let ciphertext = cipher
         .encrypt(iv, Payload::from(data.as_bytes()))
         .expect("Encryption here should not fail"); // only memory issue?
-    let res = format!("{}{}", STANDARD_NO_PAD.encode(iv), STANDARD_NO_PAD.encode(ciphertext));
+    let res = format!(
+        "{}{}",
+        STANDARD_NO_PAD.encode(iv),
+        STANDARD_NO_PAD.encode(ciphertext)
+    );
 
     res
 }
@@ -557,7 +660,9 @@ pub fn decrypt(key_bytes: &[u8], encrypted: &[u8]) -> Result<String, String> {
     let cipher = Aes256Gcm::new(key);
 
     // Decode IV and ciphertext
-    let iv_bytes = STANDARD_NO_PAD.decode(&encrypted[..16]).map_err(|_| "Failed to decode IV".to_string())?;
+    let iv_bytes = STANDARD_NO_PAD
+        .decode(&encrypted[..16])
+        .map_err(|_| "Failed to decode IV".to_string())?;
     let iv = Nonce::from_slice(&iv_bytes);
 
     let ciphertext = STANDARD_NO_PAD
@@ -587,6 +692,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub enum EncryptedRejection {
     IoError,
     DecryptionError(String),
@@ -606,12 +712,18 @@ impl IntoResponse for EncryptedRejection {
                     .await
             }
             Self::DeserializationError(error) => {
-                (StatusCode::BAD_REQUEST, format_args!("Failed to parse JSON body: {error}"))
+                (
+                    StatusCode::BAD_REQUEST,
+                    format_args!("Failed to parse JSON body: {error}"),
+                )
                     .write_to(connection, response_writer)
                     .await
             }
             Self::DecryptionError(error) => {
-                (StatusCode::BAD_REQUEST, format_args!("Failed to decrypt data: {error}"))
+                (
+                    StatusCode::BAD_REQUEST,
+                    format_args!("Failed to decrypt data: {error}"),
+                )
                     .write_to(connection, response_writer)
                     .await
             }
@@ -653,14 +765,16 @@ fn ctr_encrypt(key_bytes: &[u8], data: &str) -> String {
 fn ctr_decrypt(key_bytes: &[u8], encrypted: &[u8]) -> Result<String, String> {
     // start verifying the hmac tag
 
-    let hmac_base64 = core::str::from_utf8(&encrypted[..43]).map_err(|e| format!("Failed UTF8 decoding hmac {e}"))?;
+    let hmac_base64 = core::str::from_utf8(&encrypted[..43])
+        .map_err(|e| format!("Failed UTF8 decoding hmac {e}"))?;
     let received_hmac = STANDARD_NO_PAD
         .decode(hmac_base64)
         .map_err(|e| format!("Failed BASE64 decoding hmac {e}"))?;
 
     let encrypted_content = &encrypted[43..];
 
-    let mut hmac = <Hmac<Sha256> as KeyInit>::new_from_slice(&key_bytes).expect("Invalid key length");
+    let mut hmac =
+        <Hmac<Sha256> as KeyInit>::new_from_slice(&key_bytes).expect("Invalid key length");
     hmac.update(encrypted_content);
     let calced_hmac = hmac.finalize().into_bytes();
     let calced_hmac = calced_hmac.as_slice(); // sha 256: 32 bytes -> 43 base64 no padding
@@ -689,7 +803,9 @@ fn ctr_decrypt(key_bytes: &[u8], encrypted: &[u8]) -> Result<String, String> {
         .map_err(|_| "Failed to decode data".to_string())?;
 
     for chunk in dest.chunks_mut(1) {
-        cipher.try_apply_keystream(chunk).map_err(|e| format!("Decryption error {e}"))?;
+        cipher
+            .try_apply_keystream(chunk)
+            .map_err(|e| format!("Decryption error {e}"))?;
     }
     String::from_utf8(dest).map_err(|_| "Failed to convert plaintext to string".to_string())
 }

@@ -12,6 +12,7 @@ use esp_hal_ota::Ota;
 use esp_mbedtls::{Certificates, TlsReference, TlsVersion, X509};
 use esp_storage::FlashStorage;
 use semver::{Version, VersionReq};
+use serde::Deserialize;
 
 use super::framework::Framework;
 
@@ -22,7 +23,7 @@ enum Report {
     Success,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Deserialize)]
 pub enum OtaRequest {
     CheckVersion,
     Update,
@@ -41,46 +42,55 @@ pub async fn ota_task(
 ) {
     let observer = framework.clone();
     if ota_request == OtaRequest::Update {
-        observer.borrow().notify_ota_start();
+        observer.borrow_mut().notify_ota_start();
     }
 
     let observer_clone = observer.clone();
     let report = move |report: Report, text: &str| match report {
         Report::Status => {
             if ota_request == OtaRequest::Update {
-                observer_clone.borrow().notify_ota_status(text);
+                observer_clone.borrow_mut().notify_ota_status(text);
             }
             info!("{text}");
         }
         Report::Failure => {
             if ota_request == OtaRequest::Update {
-                observer_clone.borrow().notify_ota_failed(text);
+                observer_clone.borrow_mut().notify_ota_failed(text);
             }
             warn!("{text}");
         }
         Report::Complete => {
             if ota_request == OtaRequest::Update {
-                observer_clone.borrow().notify_ota_completed(text);
+                observer_clone.borrow_mut().notify_ota_completed(text);
             }
             info!("{text}");
         }
         Report::Success => {
             if ota_request == OtaRequest::Update {
-                observer_clone.borrow().notify_ota_completed(text);
+                observer_clone.borrow_mut().notify_ota_completed(text);
             }
             info!("{text}");
         }
     };
     report(Report::Status, "Resolving Dns");
-    let Ok(ips) = stack.dns_query(ota_domain, embassy_net::dns::DnsQueryType::A).await else {
-        report(Report::Failure, "Failed to resolve Dns, Internet accessible?");
+    let Ok(ips) = stack
+        .dns_query(ota_domain, embassy_net::dns::DnsQueryType::A)
+        .await
+    else {
+        report(
+            Report::Failure,
+            "Failed to resolve Dns, Internet accessible?",
+        );
         return;
     };
 
     info!("Resolved DNS for {ota_domain} {:?}", ips);
 
     if ips.len() == 0 {
-        report(Report::Status, "Failed to resolve Dns, Internet accessible?");
+        report(
+            Report::Status,
+            "Failed to resolve Dns for {ota_domain}, Internet accessible?",
+        );
         return;
     }
 
@@ -93,7 +103,13 @@ pub async fn ota_task(
     let tcp = Tcp::new(stack, &tcp_buffers);
 
     let servername = CString::new(ota_domain).unwrap();
-    let tls_connector = esp_mbedtls::asynch::TlsConnector::new(tcp, &servername, TlsVersion::Tls1_2, certificates, tls);
+    let tls_connector = esp_mbedtls::asynch::TlsConnector::new(
+        tcp,
+        &servername,
+        TlsVersion::Tls1_2,
+        certificates,
+        tls,
+    );
 
     let IpAddress::Ipv4(addr) = ips[0] else {
         report(Report::Failure, "Unsupported reply from Dns");
@@ -102,28 +118,47 @@ pub async fn ota_task(
 
     let mut conn_buf = [0_u8; 4096];
     let mut data_buf = [0; 4096];
-    let mut conn: Connection<_> = Connection::new(&mut conn_buf, &tls_connector, SocketAddr::new(core::net::IpAddr::V4(addr), 443));
+    let mut conn: Connection<_> = Connection::new(
+        &mut conn_buf,
+        &tls_connector,
+        SocketAddr::new(core::net::IpAddr::V4(addr), 443),
+    );
 
     // Get ota.toml
 
     let toml_filename = format!("{ota_path}{ota_toml_filename}");
 
+    info!("Fetching OTA metadata from {toml_filename}");
     report(Report::Status, "Fetching firmware metadata");
-    conn.initiate_request(true, edge_http::Method::Get, &toml_filename, &[("Host", ota_domain)])
+    if let Err(err) = conn
+        .initiate_request(
+            true,
+            edge_http::Method::Get,
+            &toml_filename,
+            &[("Host", ota_domain)],
+        )
         .await
-        .unwrap_or_else(|_| {
-            report(Report::Failure, "Failed to initiate request for metadata");
-            return;
-        });
-
-    conn.initiate_response().await.unwrap_or_else(|_| {
-        report(Report::Failure, "Failed to fetch response for metadata");
+    {
+        report(Report::Failure, "Failed to initiate request for metadata");
+        error!("Error: {err:?}");
         return;
-    });
-    let Ok(headers) = conn.headers() else {
-        report(Report::Failure, "Failed to read resopnse headers");
+    }
+
+    if let Err(err) = conn.initiate_response().await {
+        report(Report::Failure, "Failed to fetch response for metadata");
+        error!("Error: {err:?}");
         return;
     };
+
+    let headers = match conn.headers() {
+        Ok(headers) => headers,
+        Err(err) => {
+            report(Report::Failure, "Failed to read resopnse headers");
+            info!("Error: {err}");
+            return;
+        }
+    };
+
     let status_code = headers.code;
     if status_code != 200 {
         report(Report::Failure, "Failed to fetch firmware metadata");
@@ -149,13 +184,17 @@ pub async fn ota_task(
             match key.trim() {
                 "filename" => filename = Some(value.trim().trim_matches('"')),
                 "crc32" => crc32 = Some(u32::from_str_radix(value.trim().trim_matches('"'), 16)),
-                "filesize" => filesize = Some(u32::from_str_radix(value.trim().trim_matches('"'), 10)),
+                "filesize" => {
+                    filesize = Some(u32::from_str_radix(value.trim().trim_matches('"'), 10))
+                }
                 "version" => version = Some(value.trim().trim_matches('"')),
                 _ => (), // Ignore unknown keys
             }
         }
     }
-    let (Some(filename), Some(Ok(crc32)), Some(version), Some(Ok(filesize))) = (filename, crc32, version, filesize) else {
+    let (Some(filename), Some(Ok(crc32)), Some(version), Some(Ok(filesize))) =
+        (filename, crc32, version, filesize)
+    else {
         report(Report::Failure, "Something is wrong with firmware metadata");
         return;
     };
@@ -163,23 +202,34 @@ pub async fn ota_task(
     let new_semver = match Version::parse(version) {
         Ok(v) => v,
         Err(_) => {
-            report(Report::Failure, "Version number in firmware metadata is invalid");
+            report(
+                Report::Failure,
+                "Version number in firmware metadata is invalid",
+            );
             return;
         }
     };
 
-    let mut curr_req = VersionReq::parse(framework.borrow().settings.app_cargo_pkg_version).unwrap();
+    let mut curr_req =
+        VersionReq::parse(framework.borrow().settings.app_cargo_pkg_version).unwrap();
     curr_req.comparators[0].op = semver::Op::Greater;
     if !curr_req.matches(&new_semver) {
         report(
             Report::Complete,
-            &format!("Current firmware version {} is up to date", framework.borrow().settings.app_cargo_pkg_version),
+            &format!(
+                "Current firmware version {} is up to date",
+                framework.borrow().settings.app_cargo_pkg_version
+            ),
         );
-        observer.borrow().notify_ota_version_available(version, false);
-        return;
+        observer
+            .borrow_mut()
+            .notify_ota_version_available(version, false);
+        // return; // Unremark this, only for testing <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
     }
 
-    observer.borrow().notify_ota_version_available(version, true);
+    observer
+        .borrow_mut()
+        .notify_ota_version_available(version, true);
 
     if ota_request == OtaRequest::CheckVersion {
         return;
@@ -189,12 +239,17 @@ pub async fn ota_task(
 
     report(Report::Status, "Downloading firmware");
     let bin_filename = format!("{}{}", ota_path, filename);
-    conn.initiate_request(true, edge_http::Method::Get, &bin_filename, &[("Host", ota_domain)])
-        .await
-        .unwrap_or_else(|_| {
-            report(Report::Failure, "Failed to initiate request for firmware");
-            return;
-        });
+    conn.initiate_request(
+        true,
+        edge_http::Method::Get,
+        &bin_filename,
+        &[("Host", ota_domain)],
+    )
+    .await
+    .unwrap_or_else(|_| {
+        report(Report::Failure, "Failed to initiate request for firmware");
+        return;
+    });
     conn.initiate_response().await.unwrap_or_else(|_| {
         report(Report::Failure, "Failed to fetch response for metadata");
         return;
@@ -226,7 +281,9 @@ pub async fn ota_task(
     let mut x = 0;
     let mut sec_since_start;
     loop {
-        let bytes_to_read = data_buf.len().min((filesize - bytes_read).try_into().unwrap());
+        let bytes_to_read = data_buf
+            .len()
+            .min((filesize - bytes_read).try_into().unwrap());
         let res = conn.read_exact(&mut data_buf[..bytes_to_read]).await;
 
         if let Ok(_) = res {
@@ -244,8 +301,14 @@ pub async fn ota_task(
                 Ok(true) => {
                     let res = ota.ota_flush(false, true);
                     sec_since_start = start_time.elapsed().as_secs();
-                    debug!("Finished: {x}: {sec_since_start} secs, {bytes_read} {bytes_read} {:.0}%", 100.0);
-                    info!("Download & Flash time: {}ms", start_time.elapsed().as_millis());
+                    debug!(
+                        "Finished: {x}: {sec_since_start} secs, {bytes_read} {bytes_read} {:.0}%",
+                        100.0
+                    );
+                    info!(
+                        "Download & Flash time: {}ms",
+                        start_time.elapsed().as_millis()
+                    );
                     if let Err(e) = res {
                         report(Report::Failure, &format!("Ota flush error: {e:?}"));
                         break;

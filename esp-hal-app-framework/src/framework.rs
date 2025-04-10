@@ -1,5 +1,6 @@
-use alloc::{format, rc::Rc, string::String, vec, vec::Vec};
-use core::{cell::RefCell, net::Ipv4Addr};
+use alloc::{format, rc::Rc, string::{String, ToString}, vec::Vec};
+use serde::Serialize;
+use core::{cell::RefCell, fmt, net::Ipv4Addr};
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::Spawner;
 use embassy_futures::block_on;
@@ -29,7 +30,7 @@ const DISPLAY_CONFIG_KEY: &str = "__display_";
 // Not nice, but good enough for now
 const WEB_SERVER_COMMANDS_LISTENERS: usize = 20;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum WebConfigMode {
     AP,
     STA,
@@ -55,6 +56,29 @@ pub struct DisplayConfig {
     pub dimming_timeout: Option<u64>,
     pub dimming_percent: Option<u8>,
     pub blackout_timeout: Option<u64>,
+}
+
+
+#[derive(Debug, Serialize, Clone)]
+pub enum OtaState {
+    VersionAvailable(String, bool),
+    Started,
+    InProgress(String),
+    Failed(String),
+    Completed(String),
+}
+
+impl fmt::Display for OtaState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OtaState::VersionAvailable(ver, new) =>
+                write!(f, "Version {} available{}", ver, if *new { " (new)" } else { "" }),
+            OtaState::Started => write!(f, "Update started"),
+            OtaState::InProgress(stage) => write!(f, "In progress: {}", stage),
+            OtaState::Failed(reason) => write!(f, "Update failed: {}", reason),
+            OtaState::Completed(ver) => write!(f, "Update completed: {}", ver),
+        }
+    }
 }
 
 pub struct FrameworkSettings {
@@ -116,7 +140,8 @@ pub struct Framework {
     pub encryption_key: &'static RefCell<Vec<u8>>,
 
     config_processed_ok: Option<bool>,
-    wifi_ok: Option<bool>,
+    pub wifi_ok: Option<bool>,
+    pub ota_state: Option<OtaState>,
 }
 
 impl Framework {
@@ -152,11 +177,12 @@ impl Framework {
             spawner,
             stack,
             tls,
-            encryption_key: crate::mk_static!(RefCell<Vec<u8>>, RefCell::new(vec![])),
+            encryption_key: crate::mk_static!(RefCell<Vec<u8>>, RefCell::new(alloc::vec![])),
             undim_display,
             config_processed_ok: None,
             wifi_ok: None,
             settings,
+            ota_state: None,
         };
         let framework = Rc::new(RefCell::new(framework));
 
@@ -474,21 +500,19 @@ impl Framework {
     // OTA
     pub fn update_firmware_ota(&self) {
         info!("Starting Firmware Upgrade Over the Air");
-        self.spawner
-            .spawn(ota_task(
-                self.settings.ota_domain,
-                self.settings.ota_path,
-                self.settings.ota_toml_filename,
-                self.settings.ota_certs,
-                self.stack,
-                self.tls,
-                OtaRequest::Update,
-                self.framework.as_ref().unwrap().clone(),
-            ))
-            .ok();
+        self.submit_ota_request(OtaRequest::Update);
     }
     pub fn check_firmware_ota(&self) {
         info!("Checking Firmware Version Over the Air");
+        self.submit_ota_request(OtaRequest::CheckVersion);
+    }
+
+    pub fn submit_ota_request(&self, ota_request: OtaRequest) {
+        if let Some (curr_ota_stae) = &self.ota_state {
+            if matches!(curr_ota_stae, OtaState::Started | OtaState::InProgress(_)) {
+                return;
+            }
+        }
         self.spawner
             .spawn(ota_task(
                 self.settings.ota_domain,
@@ -497,7 +521,7 @@ impl Framework {
                 self.settings.ota_certs,
                 self.stack,
                 self.tls,
-                OtaRequest::CheckVersion,
+                ota_request,
                 self.framework.as_ref().unwrap().clone(),
             ))
             .ok();
@@ -508,7 +532,7 @@ impl Framework {
         let salt: &[u8] = self.settings.web_app_salt.as_bytes();
         let iterations = self.settings.web_app_key_derivation_iterations;
 
-        let mut buf_vec = vec![0; self.settings.web_app_security_key_length];
+        let mut buf_vec = alloc::vec![0; self.settings.web_app_security_key_length];
         let mut buf = buf_vec.as_mut_slice();
 
         let key_to_use;
@@ -611,7 +635,8 @@ impl Framework {
         }
     }
 
-    pub fn notify_ota_version_available(&self, version: &str, newer: bool) {
+    pub fn notify_ota_version_available(&mut self, version: &str, newer: bool) {
+        self.ota_state = Some(OtaState::VersionAvailable(version.to_string(), newer));
         for weak_observer in self.observers.iter() {
             let observer = weak_observer.upgrade().unwrap();
             observer
@@ -619,25 +644,29 @@ impl Framework {
                 .on_ota_version_available(version, newer);
         }
     }
-    pub fn notify_ota_start(&self) {
+    pub fn notify_ota_start(&mut self) {
+        self.ota_state = Some(OtaState::Started);
         for weak_observer in self.observers.iter() {
             let observer = weak_observer.upgrade().unwrap();
             observer.borrow_mut().on_ota_start();
         }
     }
-    pub fn notify_ota_status(&self, text: &str) {
+    pub fn notify_ota_status(&mut self, text: &str) {
+        self.ota_state = Some(OtaState::InProgress(text.to_string()));
         for weak_observer in self.observers.iter() {
             let observer = weak_observer.upgrade().unwrap();
             observer.borrow_mut().on_ota_status(text);
         }
     }
-    pub fn notify_ota_failed(&self, text: &str) {
+    pub fn notify_ota_failed(&mut self, text: &str) {
+        self.ota_state = Some(OtaState::Failed(text.to_string()));
         for weak_observer in self.observers.iter() {
             let observer = weak_observer.upgrade().unwrap();
             observer.borrow_mut().on_ota_failed(text);
         }
     }
-    pub fn notify_ota_completed(&self, text: &str) {
+    pub fn notify_ota_completed(&mut self, text: &str) {
+        self.ota_state = Some(OtaState::Completed(text.to_string()));
         for weak_observer in self.observers.iter() {
             let observer = weak_observer.upgrade().unwrap();
             observer.borrow_mut().on_ota_completed(text);
@@ -661,7 +690,7 @@ impl Framework {
     }
     pub fn notify_webapp_url_update(&self, ip_url: &str, name_url: Option<&str>, ssid: &str) {
         for weak_observer in self.observers.iter() {
-            let observer = weak_observer.upgrade().unwrap();
+     let observer = weak_observer.upgrade().unwrap();
             observer
                 .borrow_mut()
                 .on_webapp_url_update(ip_url, name_url, ssid);

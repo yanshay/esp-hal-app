@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>App-Framework Configuration</title>
+    <title>SpoolEase Scale Configuration</title>
     <style>
       /* General Styles */
       body {
@@ -54,6 +54,27 @@
         display: block;
         text-align: center;
         margin: 10px auto 0;
+      }
+
+      .status-text {
+        width: 100%;
+        padding: 10px;
+        box-sizing: border-box;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 14px;
+        margin: 0;
+        min-height: 2rem;
+        height: 2rem;
+        display: flex;
+        align-items: center;
+      }
+
+      .next-to-status-button {
+        height: 2rem; 
+        margin: 0; 
+        margin-left: 10px; 
+        padding: 0 10px;
       }
 
       input[type="text"],
@@ -124,7 +145,7 @@
         background-color: #f44336;
       }
 
-      button.danger:hover {
+      button.danger:not(:disabled):hover {
         background-color: #d32f2f;
       }
 
@@ -132,7 +153,7 @@
         width: 100%;
       }
 
-      button.apply-btn:disabled {
+      button:disabled {
         background-color: #cccccc;
         cursor: not-allowed;
       }
@@ -186,7 +207,7 @@
         window.alert = function(message) { showAlert(message); };
     </script>
 
-    <h1>App-Framework</h1>
+    <h1>SpoolEase-Scale</h1>
     <h3>Most configurations require device restart</h3>
 
     <!-- Security Key Section -->
@@ -282,6 +303,71 @@
       </button>
     </div>
 
+    <!-- Device Name -->
+    <div class="section" id="device-name-section">
+      <h2 class="section-title">Device Name</h2>
+      <div class="form-row">
+        <label for="device-name">Device Name:<span>mDNS (http://devicename.local) & discovery</span></label>
+        <input
+          type="text"
+          maxlength="63"
+          pattern="[a-zA-Z0-9-]{1,63}"
+          oninput="filterDnsName(this)"
+          id="device-name"
+          placeholder="Enter Device Name"
+        />
+      </div>
+
+      <button
+        id="device-name-apply"
+        type="button"
+        class="apply-btn"
+        onclick="applyDeviceNameSettings()"
+        disabled
+      >
+        Apply
+      </button>
+    </div>
+
+    <!-- OTA Section -->
+
+    <div class="section" id="ota-section">
+      <h2 class="section-title">Network Firmware Upgrade</h2>
+
+      <div class="form-row">
+        <label for="curr-version">Current firmware version:</label>
+        <p class="status-text" id="curr-version"></p>
+      </div>
+
+      <button
+        id="ota-request"
+        type="button"
+        class="danger apply-btn"
+        onclick="requestOta()"
+        disabled
+        style="margin-bottom: 10px"
+      >
+        Start Network Upgrade
+      </button>
+
+      <div class="form-row">
+        <label for="ota-status">Status:</label>
+        <div style="display: flex; flex-direction: row;align-items: center;">
+          <p style="height: 3rem" class="status-text" id="ota-status"></p>
+          <button
+             style="height: 3rem"
+            class="next-to-status-button "
+            id="ota-status-update"
+            type="button"
+            onclick="fetchOtaStatus()"
+            disabled
+          >
+            Update<br/>Status
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- General Section -->
     <div class="section" id="general-section">
       <h2 class="section-title">General</h2>
@@ -322,7 +408,7 @@
 
     <!-- Common Communication & UI Functions -->
     <script>
-      async function sendData(inurl, data) {
+      async function sendData(inurl, data, retries = 5) {
         // data is object, not json string
         const url = `${urlPrefix}${inurl}`;
         let encryptionKey = getEncryptionKey();
@@ -331,7 +417,7 @@
             method: "POST",
             headers: { "Content-Type": "application/text" },
             body: encrypt(encryptionKey, JSON.stringify(data)),
-          }),
+          }), retries
         );
         return response;
       }
@@ -378,6 +464,8 @@
 
       async function fetchSectionConfigs() {
         await retryOperation(() => fetchWifiInitialConfig());
+        await retryOperation(() => fetchOtaStatus());
+        await retryOperation(() => fetchDeviceNameInitialConfig());
       }
 
       async function fetchInitialSectionConfig(section) {
@@ -415,14 +503,23 @@
         const data = { test: "Hello" };
         try {
           let response = await sendData("/api/test-key", data); // Replace with actual server endpoint
+          document.getElementById("wifi-section-apply").disabled = true;
+          document.getElementById("device-name-apply").disabled = true;
+          document.getElementById("set-fixed-key-apply").disabled = true;
           if (response.status == 400) {
-            document.getElementById("security-key-feedback").textContent =
-              "Security Key is incorrect";
+            document.getElementById("security-key-feedback").textContent = "Security Key is incorrect";
+
+            document.getElementById("ota-request").disabled = true;
+            document.getElementById("ota-status-update").disabled = true;
             document.getElementById("restart-device").disabled = true;
+
+            return;
           } else if (response.ok) {
-            document.getElementById("security-key-feedback").textContent =
-              "Security Key validated";
             document.getElementById("verify-key-button").disabled = true;
+            document.getElementById("security-key-feedback").textContent = "Security Key validated";
+
+            document.getElementById("ota-request").disabled = false;
+            document.getElementById("ota-status-update").disabled = false;
             document.getElementById("restart-device").disabled = false;
           }
         } catch (error) {
@@ -448,10 +545,37 @@
         }
       }
 
+      async function fetchOtaStatus() {
+        const data = await fetchInitialSectionConfig("ota");
+
+        if (data) {
+          document.getElementById("ota-status").textContent = data.status;
+          document.getElementById("curr-version").textContent = data.curr_ver;
+        }
+      }
+
+      function requestOta() {
+        if (confirm("Do you want to upgrade firmware now?")) {
+          const data = { request: "Update" };
+          sendData("/api/ota-request", data, 1);
+          alert(
+            "Request to start network upgrade sent, press [Updat Status] to see progress",
+          );
+        }
+      }
+
+      async function fetchDeviceNameInitialConfig() {
+        const data = await fetchInitialSectionConfig("device-name");
+
+        if (data) {
+          document.getElementById("device-name").value = data.name;
+        }
+      }
+
       // Function to reset the device
       function restartDevice() {
         const data = {};
-        sendData("/api/reset-device", data);
+        sendData("/api/reset-device", data, 1);
         alert(
           "Device restarted. Reactivate Web Config from device and refresh page to continue configuration",
         );
@@ -464,6 +588,20 @@
         const data = { ssid, password };
         const applyButton = document.getElementById("wifi-section-apply");
         sendConfigData("/api/wifi-config", data, applyButton); // Replace with actual server endpoint
+      }
+
+      function applyDeviceNameSettings() {
+        const name = document.getElementById("device-name").value;
+        const data = { name };
+        const applyButton = document.getElementById("device-name-section-apply");
+        sendConfigData("/api/device-name-config", data, applyButton); // Replace with actual server endpoint
+      }
+
+      function filterDnsName(el) {
+        el.value = el.value
+          .toLowerCase()
+          .replace(/[^a-z0-9-]/g, '')   // remove invalid chars
+          .replace(/^-+/, '');          // trim leading hyphens (trailing also not allowed, but during typing it is there)
       }
 
       function applyFixedSecurityKeySettings() {
@@ -486,6 +624,7 @@
           "security-key-feedback",
         );
         setupChangeListeners("set-fixed-key-section", "set-fixed-key-apply");
+        setupChangeListeners("device-name-section", "device-name-apply");
         // setupChangeListeners("display-section", "display-section-apply");
       });
 
@@ -512,12 +651,11 @@
         urlPrefix = "/captive";
       }
       window.addEventListener("DOMContentLoaded", () => {
-        const installButton = document.getElementById("install-button");
         if (
           window.location.hostname === "localhost" ||
           window.location.hostname === "127.0.0.1"
         ) {
-          urlPrefix = "http://192.168.10.79" + "urlPrefix";
+          urlPrefix = "http://192.168.10.79" + `${urlPrefix}`;
         }
       });
     </script>
