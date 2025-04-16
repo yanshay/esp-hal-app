@@ -224,12 +224,8 @@ pub async fn ota_task(
         observer
             .borrow_mut()
             .notify_ota_version_available(version, false);
-        // return; // Unremark this, only for testing <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+        return;
     }
-
-    observer
-        .borrow_mut()
-        .notify_ota_version_available(version, true);
 
     if ota_request == OtaRequest::CheckVersion {
         return;
