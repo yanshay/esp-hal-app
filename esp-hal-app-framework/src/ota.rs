@@ -225,6 +225,10 @@ pub async fn ota_task(
             .borrow_mut()
             .notify_ota_version_available(version, false);
         return;
+    } else {
+        observer
+            .borrow_mut()
+            .notify_ota_version_available(version, true);
     }
 
     if ota_request == OtaRequest::CheckVersion {
