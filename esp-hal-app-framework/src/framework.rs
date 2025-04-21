@@ -141,6 +141,9 @@ pub struct Framework {
 
     config_processed_ok: Option<bool>,
     pub wifi_ok: Option<bool>,
+    pub web_config_ip_url: String,
+    pub web_config_name_url: String,
+    pub web_config_key: String,
     pub ota_state: Option<OtaState>,
 }
 
@@ -181,6 +184,9 @@ impl Framework {
             undim_display,
             config_processed_ok: None,
             wifi_ok: None,
+            web_config_ip_url: String::new(),
+            web_config_name_url: String::new(),
+            web_config_key: String::new(),
             settings,
             ota_state: None,
         };
@@ -381,6 +387,8 @@ impl Framework {
             let web_config_name_url = web_config_name_url.as_ref().map(|v| v.as_str());
             self.wifi_ok = Some(true);
             self.notify_webapp_url_update(&web_config_ip_url, web_config_name_url, ssid);
+            self.web_config_ip_url = web_config_ip_url;
+            self.web_config_name_url = web_config_name_url.unwrap_or("").to_string();
         } else {
             self.wifi_ok = Some(false);
             self.notify_webapp_url_update("N/A - WiFi not connected", None, ssid);
@@ -528,7 +536,7 @@ impl Framework {
     }
 
     // Web App
-    pub fn start_web_app(&self, stack: Stack<'static>, mode: WebConfigMode) {
+    pub fn start_web_app(&mut self, stack: Stack<'static>, mode: WebConfigMode) {
         let salt: &[u8] = self.settings.web_app_salt.as_bytes();
         let iterations = self.settings.web_app_key_derivation_iterations;
 
@@ -541,7 +549,7 @@ impl Framework {
         } else {
             fn number_to_ascii_from_list(n: u8) -> u8 {
                 // characters to used, removed a few that are unclear/similar (iI0Oo)
-                let charset = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz123456789-/$@?!";
+                let charset = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz123456789-$@?!";
 
                 // Make sure the number is within the 0..255 range and map it to the charset
                 let index = (n % 62) as usize; // % 62 ensures it stays in the 0..61 range
@@ -556,6 +564,7 @@ impl Framework {
             let key = core::str::from_utf8(&buf).unwrap();
             key_to_use = key;
         }
+        self.web_config_key = key_to_use.to_string();
         self.encryption_key
             .replace(derive_key(key_to_use, salt, iterations));
         self.web_server_commands

@@ -88,7 +88,7 @@ pub async fn connection(
             spawner.spawn(captive_portal(ap_stack, framework.clone())).ok();
         }
         Timer::after(Duration::from_millis(1000)).await; // why wait (in original example)
-        let framework_borrow = framework.borrow();
+        let mut framework_borrow = framework.borrow_mut();
         framework_borrow.start_web_app(ap_stack, WebConfigMode::AP);
         drop(framework_borrow);
         framework.borrow_mut().report_wifi( Some(Ipv4Addr::new(ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3)), true, app_cargo_pkg_name);
