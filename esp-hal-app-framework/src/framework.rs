@@ -552,7 +552,7 @@ impl Framework {
                 let charset = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz123456789-$@?!";
 
                 // Make sure the number is within the 0..255 range and map it to the charset
-                let index = (n % 62) as usize; // % 62 ensures it stays in the 0..61 range
+                let index = (n % charset.len() as u8) as usize; // % 61 ensures it stays in the 0..60 range
                 charset[index]
             }
 
