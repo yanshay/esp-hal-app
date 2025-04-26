@@ -300,10 +300,12 @@ pub async fn connection(
             }
         }
     }
+    // Now WiFi credtneials available
 
     term_info!("About to connect to WiFi SSID '{}'", ssid);
     // trace!("About to connect Wifi using '{}', '{}'", password, ssid);
 
+    let first_connect = true;
     loop {
         #[allow(clippy::single_match)]
         match esp_wifi::wifi::wifi_state() {
@@ -324,7 +326,11 @@ pub async fn connection(
                     Timer::after(Duration::from_millis(1000)).await // why wait (in original example)
                 }
             }
-            _ => {}
+            _ => {
+                if !first_connect {
+                    term_error!("WiFi disconnected, reconnecting...");
+                }
+            }
         }
 
         if !matches!(controller.is_started(), Ok(true)) {
