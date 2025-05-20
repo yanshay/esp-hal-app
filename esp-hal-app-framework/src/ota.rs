@@ -29,6 +29,7 @@ pub enum OtaRequest {
     Update,
 }
 
+#[allow(clippy::too_many_arguments)]
 #[embassy_executor::task]
 pub async fn ota_task(
     ota_domain: &'static str,
@@ -86,7 +87,7 @@ pub async fn ota_task(
 
     info!("Resolved DNS for {ota_domain} {:?}", ips);
 
-    if ips.len() == 0 {
+    if ips.is_empty() {
         report(
             Report::Status,
             "Failed to resolve Dns for {ota_domain}, Internet accessible?",
@@ -185,7 +186,7 @@ pub async fn ota_task(
                 "filename" => filename = Some(value.trim().trim_matches('"')),
                 "crc32" => crc32 = Some(u32::from_str_radix(value.trim().trim_matches('"'), 16)),
                 "filesize" => {
-                    filesize = Some(u32::from_str_radix(value.trim().trim_matches('"'), 10))
+                    filesize = Some(value.trim().trim_matches('"').parse::<u32>())
                 }
                 "version" => version = Some(value.trim().trim_matches('"')),
                 _ => (), // Ignore unknown keys
@@ -239,21 +240,21 @@ pub async fn ota_task(
 
     report(Report::Status, "Downloading firmware");
     let bin_filename = format!("{}{}", ota_path, filename);
-    conn.initiate_request(
+    if let Err(e) = conn.initiate_request(
         true,
         edge_http::Method::Get,
         &bin_filename,
         &[("Host", ota_domain)],
-    )
-    .await
-    .unwrap_or_else(|_| {
-        report(Report::Failure, "Failed to initiate request for firmware");
+    ).await {
+        report(Report::Failure, &format!("Failed to initiate request for firmware {e:?}"));
         return;
-    });
-    conn.initiate_response().await.unwrap_or_else(|_| {
-        report(Report::Failure, "Failed to fetch response for metadata");
+    }
+
+    if let Err(e) = conn.initiate_response().await {
+        report(Report::Failure, &format!("Failed to fetch response for metadata {e:?}"));
         return;
-    });
+    } 
+
     let status_code = conn.headers().unwrap().code;
     info!("Response code {}", status_code);
     if status_code != 200 {
@@ -284,9 +285,8 @@ pub async fn ota_task(
         let bytes_to_read = data_buf
             .len()
             .min((filesize - bytes_read).try_into().unwrap());
-        let res = conn.read_exact(&mut data_buf[..bytes_to_read]).await;
 
-        if let Ok(_) = res {
+        if conn.read_exact(&mut data_buf[..bytes_to_read]).await.is_ok() {
             bytes_read += bytes_to_read as u32;
 
             if bytes_to_read == 0 {

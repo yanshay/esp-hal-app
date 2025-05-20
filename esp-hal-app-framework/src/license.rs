@@ -15,13 +15,14 @@ use pasetors::{
 use serde_json::Value;
 
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(serde::Deserialize, serde::Serialize, Default)]
 struct License {
     version: String,
     // encoded mac address
     mac_addr: String,
 }
 
+#[derive(Default)]
 pub struct LicenseManager {
     license: License,
 }
@@ -119,8 +120,8 @@ fn encode_with_xor(input: &str, key: &[u8]) -> String {
     // Step 2: Base64 encode the XOR result
     URL_SAFE.encode(&xor_result)
 }
-/// Decode data from Base64 and XOR
 
+/// Decode data from Base64 and XOR
 fn decode_with_xor(encoded: &str, key: &[u8]) -> Result<String, base64::DecodeError> {
     // Step 1: Base64 decode the input
     // TODO: deal with error handling, for some reason doesn't automatically convert error

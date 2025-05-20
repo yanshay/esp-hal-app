@@ -59,13 +59,13 @@ use rand::RngCore;
 #[cfg(feature="extern-random")]
 #[no_mangle]
 unsafe extern "Rust" fn __getrandom_custom(dest: *mut u8, len: usize) -> Result<(), getrandom::Error> {
-    let mut buf = unsafe {
+    let buf = unsafe {
         // fill the buffer with zeros
         core::ptr::write_bytes(dest, 0, len);
         // create mutable byte slice
         core::slice::from_raw_parts_mut(dest, len)
     };
     #[allow(static_mut_refs)]
-    RNG.get_mut().unwrap().fill_bytes(&mut buf);
+    RNG.get_mut().unwrap().fill_bytes(buf);
     Ok(())
 }

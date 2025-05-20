@@ -384,7 +384,7 @@ impl Framework {
                     }
                 }
             };
-            let web_config_name_url = web_config_name_url.as_ref().map(|v| v.as_str());
+            let web_config_name_url = web_config_name_url.as_deref();
             self.wifi_ok = Some(true);
             self.notify_webapp_url_update(&web_config_ip_url, web_config_name_url, ssid);
             self.web_config_ip_url = web_config_ip_url;
@@ -409,8 +409,8 @@ impl Framework {
 
     pub fn initialization_ok(&self) -> bool {
         matches!(self.config_processed_ok, Some(true))
-            && self.wifi_ssid != None
-            && self.wifi_password != None
+            && self.wifi_ssid.is_some()
+            && self.wifi_password.is_some()
     }
 
     #[allow(dead_code)]
@@ -441,7 +441,7 @@ impl Framework {
                 key: Some(String::from(key)),
             };
             let fixed_key_store = serde_json::to_string(&fixed_key_config).unwrap();
-            return self.store(String::from(FIXED_KEY_CONFIG_KEY), fixed_key_store);
+            self.store(String::from(FIXED_KEY_CONFIG_KEY), fixed_key_store)
         }
     }
     pub fn erase_stored_fixed_key(&mut self) {
@@ -472,7 +472,7 @@ impl Framework {
                 name: Some(String::from(name)),
             };
             let device_name_store = serde_json::to_string(&device_name_config).unwrap();
-            return self.store(String::from(DEVICE_NAME_CONFIG_KEY), device_name_store);
+            self.store(String::from(DEVICE_NAME_CONFIG_KEY), device_name_store)
         }
     }
 
@@ -541,7 +541,7 @@ impl Framework {
         let iterations = self.settings.web_app_key_derivation_iterations;
 
         let mut buf_vec = alloc::vec![0; self.settings.web_app_security_key_length];
-        let mut buf = buf_vec.as_mut_slice();
+        let buf = buf_vec.as_mut_slice();
 
         let key_to_use;
         if let Some(key) = self.fixed_key.as_ref() {
@@ -556,12 +556,12 @@ impl Framework {
                 charset[index]
             }
 
-            getrandom::getrandom(&mut buf).unwrap();
+            getrandom::getrandom(buf).unwrap();
             for x in buf.iter_mut() {
                 *x = number_to_ascii_from_list(*x);
             }
             buf[0] = buf[0].to_ascii_uppercase(); // to make it easier to type in iPhone that starts with capital lette
-            let key = core::str::from_utf8(&buf).unwrap();
+            let key = core::str::from_utf8(buf).unwrap();
             key_to_use = key;
         }
         self.web_config_key = key_to_use.to_string();

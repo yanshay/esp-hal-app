@@ -88,9 +88,11 @@ pub async fn connection(
             spawner.spawn(captive_portal(ap_stack, framework.clone())).ok();
         }
         Timer::after(Duration::from_millis(1000)).await; // why wait (in original example)
-        let mut framework_borrow = framework.borrow_mut();
-        framework_borrow.start_web_app(ap_stack, WebConfigMode::AP);
-        drop(framework_borrow);
+        { // Important: Don't remove: block to drop framework_borrow
+            let mut framework_borrow = framework.borrow_mut();
+            framework_borrow.start_web_app(ap_stack, WebConfigMode::AP);
+            drop(framework_borrow); // adding explicit drop, just in case
+        }
         framework.borrow_mut().report_wifi( Some(Ipv4Addr::new(ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3)), true, app_cargo_pkg_name);
 
         term_info!("WiFi Credentions not Configured.");
@@ -257,7 +259,7 @@ pub async fn connection(
                                     _ => (),
                                 }
 
-                                if buffer.len() == 0 {
+                                if buffer.is_empty() {
                                     break 'process_data; // skips one empty iteration over no data to speed things up
                                 }
 
@@ -427,7 +429,7 @@ async fn dhcp_server(stack: Stack<'static>, framework: Rc<RefCell<Framework>>) {
     let udp = edge_nal_embassy::Udp::new(stack, &udp_buffers);
     let addr = core::net::SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DEFAULT_SERVER_PORT);
     let mut socket = udp.bind(core::net::SocketAddr::V4(addr)).await.unwrap();
-    io::server::server::run(&mut server, &mut server_options, &mut socket, &mut buf)
+    io::server::server::run(&mut server, &server_options, &mut socket, &mut buf)
         .await
         .unwrap();
 }

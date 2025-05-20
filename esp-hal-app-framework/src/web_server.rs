@@ -354,7 +354,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
                 Err(err) => error!("{:?}", &err),
             }
         } else {
-            match serve_with_state(app, &config, &mut http_buffer, socket, state).await {
+            match serve_with_state(app, config, &mut http_buffer, socket, state).await {
                 Ok(handled_requests_count) => {
                     info!(
                         "{} requests handled from {:?}",
@@ -375,9 +375,7 @@ pub struct SessionWrapper<'a> {
     session: Rc<Mutex<NoopRawMutex, Session<'a, TcpSocket<'a>>>>,
 }
 
-impl<'a, 's> SessionWrapper<'s>
-where
-    's: 'a,
+impl<'s> SessionWrapper<'s>
 {
     pub fn new(session: Session<'s, TcpSocket<'s>>) -> Self {
         Self {
@@ -396,15 +394,14 @@ pub struct SessionReader<'a> {
     session: Rc<Mutex<NoopRawMutex, Session<'a, TcpSocket<'a>>>>,
 }
 
-impl<'a> embedded_io_async::ErrorType for SessionReader<'a> {
+impl embedded_io_async::ErrorType for SessionReader<'_> {
     type Error = TlsError;
 }
 
-impl<'a> embedded_io_async::Read for SessionReader<'a> {
+impl embedded_io_async::Read for SessionReader<'_> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         let mut session = self.session.lock().await;
-        let res = session.read(buf).await;
-        res
+        session.read(buf).await
     }
 }
 
@@ -412,21 +409,19 @@ pub struct SessionWriter<'a> {
     session: Rc<Mutex<NoopRawMutex, Session<'a, TcpSocket<'a>>>>,
 }
 
-impl<'a> embedded_io_async::ErrorType for SessionWriter<'a> {
+impl embedded_io_async::ErrorType for SessionWriter<'_> {
     type Error = TlsError;
 }
 
-impl<'a> embedded_io_async::Write for SessionWriter<'a> {
+impl embedded_io_async::Write for SessionWriter<'_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         let mut session = self.session.lock().await;
-        let res = session.write(buf).await;
-        res
+        session.write(buf).await
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
         let mut session = self.session.lock().await;
-        let res = session.flush().await;
-        res
+        session.flush().await
     }
 }
 
@@ -458,6 +453,6 @@ impl<'s> picoserve::io::Socket for SessionWrapper<'s> {
         _timeouts: &picoserve::Timeouts<Timer::Duration>,
         _timer: &mut Timer,
     ) -> Result<(), picoserve::Error<Self::Error>> {
-        self.close().await.map_err(|e| picoserve::Error::Write(e))
+        self.close().await.map_err(picoserve::Error::Write)
     }
 }

@@ -40,7 +40,7 @@ pub struct WebAppState {
 impl WebAppState {
     pub fn new(key: &'static RefCell<Vec<u8>>) -> Self {
         Self {
-            encryption: Encryption(&key),
+            encryption: Encryption(key),
         }
     }
 }
@@ -95,7 +95,7 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder
             post(
                 async move |State(Encryption(key)): State<Encryption>, body: String| {
                     // Order matter, state first, post data last
-                    if let Ok(_decrypted) = ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                    if let Ok(_decrypted) = ctr_decrypt(&key.borrow(), body.as_bytes()) {
                         (StatusCode::OK, "")
                     } else {
                         (StatusCode::FORBIDDEN, "")
@@ -109,7 +109,7 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder
             "/captive/api/fixed-key-config",
             post(
                 move |State(Encryption(key)): State<Encryption>, body: String| {
-                    ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                    ready(match ctr_decrypt(&key.borrow(), body.as_bytes()) {
                         Ok(decrypted) => (StatusCode::OK, {
                             match serde_json::from_str::<FixedKeyConfigDTO>(&decrypted) {
                                 Ok(fixed_key_config) => {
@@ -143,7 +143,7 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder
             "/captive/api/wifi-config",
             post(
                 move |State(Encryption(key)): State<Encryption>, body: String| {
-                    ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                    ready(match ctr_decrypt(&key.borrow(), body.as_bytes()) {
                         Ok(decrypted) => (StatusCode::OK, {
                             match serde_json::from_str::<WifiConfigDTO>(&decrypted) {
                                 Ok(wifi_config) => {
@@ -196,7 +196,7 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder
             "/captive/api/device-name-config",
             post(
                 move |State(Encryption(key)): State<Encryption>, body: String| {
-                    ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                    ready(match ctr_decrypt(&key.borrow(), body.as_bytes()) {
                         Ok(decrypted) => (StatusCode::OK, {
                             match serde_json::from_str::<DeviceNameDTO>(&decrypted) {
                                 Ok(device_name_config) => {
@@ -242,7 +242,7 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder
             "/captive/api/reset-device",
             post(
                 move |State(Encryption(key)): State<Encryption>, body: String| {
-                    ready(match ctr_decrypt(&key.borrow(), &body.as_bytes()) {
+                    ready(match ctr_decrypt(&key.borrow(), body.as_bytes()) {
                         Ok(_) => {
                             framework_clone.borrow_mut().reset_device();
                             (
@@ -630,7 +630,7 @@ pub(crate) fn encrypt(key_bytes: &[u8], data: &str) -> String {
     // Derive key (32 bytes from a user-provided key)
 
     // let key_bytes = derive_key(key);
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
 
     let cipher = Aes256Gcm::new(key);
 
@@ -655,7 +655,7 @@ pub(crate) fn encrypt(key_bytes: &[u8], data: &str) -> String {
 pub fn decrypt(key_bytes: &[u8], encrypted: &[u8]) -> Result<String, String> {
     //Derive key (32 bytes from a user-provided key)
     // let key_bytes = derive_key(key);
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
+    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
 
     let cipher = Aes256Gcm::new(key);
 
@@ -774,7 +774,7 @@ fn ctr_decrypt(key_bytes: &[u8], encrypted: &[u8]) -> Result<String, String> {
     let encrypted_content = &encrypted[43..];
 
     let mut hmac =
-        <Hmac<Sha256> as KeyInit>::new_from_slice(&key_bytes).expect("Invalid key length");
+        <Hmac<Sha256> as KeyInit>::new_from_slice(key_bytes).expect("Invalid key length");
     hmac.update(encrypted_content);
     let calced_hmac = hmac.finalize().into_bytes();
     let calced_hmac = calced_hmac.as_slice(); // sha 256: 32 bytes -> 43 base64 no padding

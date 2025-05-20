@@ -1,8 +1,4 @@
 
-/// Prints and returns the value of a given expression for quick and dirty
-/// debugging.
-// implementation adapted from `std::dbg`
-
 pub static SEPARATOR: char = '/';
 
 #[macro_export]
@@ -15,6 +11,10 @@ macro_rules! file_name {
         }
     }};
 }
+
+// Prints and returns the value of a given expression for quick and dirty
+// debugging.
+// implementation adapted from `std::dbg`
 #[macro_export]
 macro_rules! dbg {
     // NOTE: We cannot use `concat!` to make a static string as a format argument
