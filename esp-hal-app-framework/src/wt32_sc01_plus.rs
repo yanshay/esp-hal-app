@@ -1,16 +1,11 @@
 use alloc::{boxed::Box, rc::Rc, string::String};
+use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use core::{cell::RefCell, slice};
 use embassy_futures::select::{select3, select4, Either3, Either4};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Timer};
 use esp_hal::{
-    dma::DmaTxBuf,
-    dma_buffers,
-    gpio::{GpioPin, Input, Level, Output, Pull},
-    lcd_cam::lcd::i8080::I8080Transfer,
-    ledc::{channel::ChannelIFace, timer::TimerIFace, LowSpeed},
-    peripherals::LCD_CAM,
-    time::RateExtU32,
+    dma::DmaTxBuf, dma_buffers, gpio::{GpioPin, Input, Level, Output, Pull}, lcd_cam::lcd::i8080::I8080Transfer, ledc::{channel::ChannelIFace, timer::TimerIFace, LowSpeed}, peripherals::LCD_CAM, spi::{self, master::Spi}, time::RateExtU32
 };
 use mipidsi::models::ST7796;
 use slint::platform::{software_renderer::Rgb565Pixel, update_timers_and_animations, WindowEvent};
@@ -394,7 +389,7 @@ async fn stats_task() {
 }
 
 #[allow(non_snake_case)]
-pub struct WT32SC01PlusPeripherals<C, P>
+pub struct WT32SC01PlusDisplayPeripherals<C, P>
 where
     C: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
     P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
@@ -420,6 +415,19 @@ where
     pub I2Cx: P,
 }
 
+
+#[allow(non_snake_case)]
+pub struct WT32SC01PlusSDCardPeripherals<S>
+where
+    S: esp_hal::peripheral::Peripheral<P: esp_hal::spi::master::Instance> + 'static,
+{
+    pub GPIO38: GpioPin<38>,
+    pub GPIO39: GpioPin<39>,
+    pub GPIO40: GpioPin<40>,
+    pub GPIO41: GpioPin<41>,
+    pub SPIx: S,
+}
+
 type InitDone = Signal<CriticalSectionRawMutex, Result<(), String>>;
 
 pub struct WT32SC01Plus {
@@ -427,24 +435,47 @@ pub struct WT32SC01Plus {
 }
 
 impl WT32SC01Plus {
-    pub fn new<C, P>(
-        peripherals: WT32SC01PlusPeripherals<C, P>,
+    #[allow(clippy::type_complexity)]
+    pub fn new<'a, C, P, S>(
+        display_peripherals: WT32SC01PlusDisplayPeripherals<C, P>,
+        sdcard_peripherals: WT32SC01PlusSDCardPeripherals<S>,
         display_orientation: mipidsi::options::Orientation,
         framework: Rc<RefCell<Framework>>,
-    ) -> (Self, WT32SC01PlusRunner<C, P>)
+    ) -> (Self, WT32SC01PlusRunner<C, P>, ExclusiveDevice<Spi<'a, esp_hal::Async>, Output<'a>, NoDelay> )
     where
         C: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
         P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
+        S: esp_hal::peripheral::Peripheral<P: esp_hal::spi::master::Instance> + 'static,
     {
         let init_done = mk_static!(InitDone, InitDone::new());
         let runner = WT32SC01PlusRunner {
-            peripherals: Some(peripherals),
+            peripherals: Some(display_peripherals),
             display_orientation,
             framework,
             init_done,
         };
         let me = Self { init_done };
-        (me, runner)
+
+        let sd_cs = Output::new(sdcard_peripherals.GPIO41, Level::High);
+        let sd_sclk = sdcard_peripherals.GPIO39;
+        let sd_miso = sdcard_peripherals.GPIO38;
+        let sd_mosi = sdcard_peripherals.GPIO40;
+        let spix = sdcard_peripherals.SPIx;
+
+        let spi_bus = Spi::new(
+            spix,
+            spi::master::Config::default().with_frequency(2.MHz()).with_mode(spi::Mode::_0),
+        )
+        .unwrap()
+        .with_sck(sd_sclk)
+        .with_miso(sd_miso)
+        .with_mosi(sd_mosi)
+        .into_async();
+
+        let sdcard_spi_device: ExclusiveDevice<esp_hal::spi::master::Spi<'_, esp_hal::Async>, esp_hal::gpio::Output<'_>, embedded_hal_bus::spi::NoDelay> =
+          ExclusiveDevice::new_no_delay(spi_bus, sd_cs).unwrap();
+
+        (me, runner, sdcard_spi_device)
     }
     pub async fn wait_init_done(&self) -> Result<(), String> {
         self.init_done.wait().await
@@ -456,7 +487,7 @@ where
     C: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
     P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
 {
-    peripherals: Option<WT32SC01PlusPeripherals<C, P>>,
+    peripherals: Option<WT32SC01PlusDisplayPeripherals<C, P>>,
     display_orientation: mipidsi::options::Orientation,
     framework: Rc<RefCell<Framework>>,
     init_done: &'static InitDone,
@@ -512,8 +543,7 @@ where
         let di_wr = peripherals.GPIO47;
         let di_dc = peripherals.GPIO0;
 
-        let mut i8080_config = esp_hal::lcd_cam::lcd::i8080::Config::default();
-        i8080_config.frequency = 40.MHz();
+        let i8080_config = esp_hal::lcd_cam::lcd::i8080::Config { frequency: 40.MHz(), ..Default::default() };
 
         let mut i8080 = esp_hal::lcd_cam::lcd::i8080::I8080::new(
             lcd_cam.lcd,

@@ -1,4 +1,5 @@
 use alloc::{format, rc::Rc, string::{String, ToString}, vec::Vec};
+use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use serde::Serialize;
 use core::{cell::RefCell, fmt, net::Ipv4Addr};
 use embassy_embedded_hal::adapter::BlockingAsync;
@@ -6,18 +7,17 @@ use embassy_executor::Spawner;
 use embassy_futures::block_on;
 use embassy_net::Stack;
 use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
-    pubsub::{PubSubChannel, Publisher, Subscriber},
+    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex}, mutex::Mutex, pubsub::{PubSubChannel, Publisher, Subscriber}
 };
 use embassy_time::Timer;
-use esp_hal::gpio::{AnyPin, Input, Pull};
+use esp_hal::{gpio::{AnyPin, Input, Output, Pull}, spi::master::Spi};
 use esp_mbedtls::TlsReference;
 use esp_storage::FlashStorage;
 
 use super::{
     flash_map::FlashMap, framework_web_app::derive_key, ota::ota_task, terminal::Terminal,
 };
-use crate::{ota::OtaRequest, web_server::WebServerCommand, wifi::mdns_task};
+use crate::{ota::OtaRequest, sdcard_store::SDCardStore, web_server::WebServerCommand, wifi::mdns_task};
 
 const WIFI_CONFIG_KEY: &str = "__wifi__";
 const FIXED_KEY_CONFIG_KEY: &str = "__fixed_key__";
@@ -145,9 +145,14 @@ pub struct Framework {
     pub web_config_name_url: String,
     pub web_config_key: String,
     pub ota_state: Option<OtaState>,
+
+    #[cfg(feature="wt32-sc01-plus")]
+    #[allow(clippy::type_complexity)]
+    inner_file_store: Option<Rc<Mutex<CriticalSectionRawMutex, SDCardStore<ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>, 20, 5>>>>,
 }
 
 impl Framework {
+
     pub fn new(
         settings: FrameworkSettings,
         flash_map: Rc<RefCell<FlashMap<BlockingAsync<FlashStorage>>>>,
@@ -189,6 +194,8 @@ impl Framework {
             web_config_key: String::new(),
             settings,
             ota_state: None,
+            #[cfg(feature="wt32-sc01-plus")]
+            inner_file_store: None,
         };
         let framework = Rc::new(RefCell::new(framework));
 
@@ -353,6 +360,19 @@ impl Framework {
         }
 
         Ok(())
+    }
+
+    #[cfg(feature="wt32-sc01-plus")]
+    pub async fn set_sdcard_device(framework: Rc<RefCell<Framework>>, sdcard_device: ExclusiveDevice<esp_hal::spi::master::Spi<'static, esp_hal::Async>, esp_hal::gpio::Output<'static>, embedded_hal_bus::spi::NoDelay> ) {
+        let file_store = SDCardStore::<_, 20, 5>::new(sdcard_device).await;
+        let file_store = Rc::new(Mutex::<CriticalSectionRawMutex, SDCardStore<_, 20, 5>>::new(file_store));
+        framework.borrow_mut().inner_file_store = Some(file_store);
+    }
+
+    #[cfg(feature="wt32-sc01-plus")]
+    #[allow(clippy::type_complexity)]
+    pub fn file_store(&self) -> Rc<Mutex<CriticalSectionRawMutex, SDCardStore<ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>, 20, 5>>> {
+        self.inner_file_store.clone().unwrap()
     }
 
     pub fn report_wifi(&mut self, ip: Option<Ipv4Addr>, captive: bool, ssid: &str) {
