@@ -2,6 +2,7 @@
   "rust-analyzer.cargo.allTargets": false,
   "rust-analyzer.cargo.allFeatures": false,
   "rust-analyzer.cargo.target": "xtensa-esp32s3-none-elf",
+  "rust-analyzer.cargo.features": ["wt32-sc01-plus"],
   "rust-analyzer.server.extraEnv": {
     "RUSTUP_TOOLCHAIN": "stable"
   },
