@@ -76,7 +76,10 @@ where
             }
             Some(event) => {
                 let ft6x36::TouchPoint { touch_type, x, y } = event;
-                let pos = TouchPosition { x: x as i32, y: y as i32 };
+                let pos = TouchPosition {
+                    x: x as i32,
+                    y: y as i32,
+                };
                 match touch_type {
                     ft6x36::TouchType::Press => {
                         self.last_returned_event = Some(TouchEvent::TouchPressed(pos));
@@ -139,7 +142,9 @@ where
 
     // https://stackoverflow.com/questions/66607516/how-to-implement-streams-from-future-functions
     // #[cfg(feature = "async")]
-    pub fn events_stream_async(&mut self) -> impl futures::Stream<Item = Result<Option<TouchEvent>, Error>> + '_ {
+    pub fn events_stream_async(
+        &mut self,
+    ) -> impl futures::Stream<Item = Result<Option<TouchEvent>, Error>> + '_ {
         futures::stream::unfold(self, |rng| async {
             let event = rng.event_async().await;
             Some((event, rng))

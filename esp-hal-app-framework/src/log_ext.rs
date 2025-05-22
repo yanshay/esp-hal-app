@@ -1,4 +1,3 @@
-
 pub static SEPARATOR: char = '/';
 
 #[macro_export]

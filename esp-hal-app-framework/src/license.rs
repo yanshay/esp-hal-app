@@ -14,7 +14,6 @@ use pasetors::{
 };
 use serde_json::Value;
 
-
 #[derive(serde::Deserialize, serde::Serialize, Default)]
 struct License {
     version: String,
@@ -30,23 +29,34 @@ pub struct LicenseManager {
 impl LicenseManager {
     pub fn new() -> Self {
         Self {
-            license: License { version: String::new(), mac_addr: String::new() },
+            license: License {
+                version: String::new(),
+                mac_addr: String::new(),
+            },
         }
     }
 
-    pub fn load_license<S: embedded_storage::ReadStorage>(&mut self, flash_storage: &mut S, magic: &str, public_key: &str, obfuscate_key: &str) -> Result<(), String> {
+    pub fn load_license<S: embedded_storage::ReadStorage>(
+        &mut self,
+        flash_storage: &mut S,
+        magic: &str,
+        public_key: &str,
+        obfuscate_key: &str,
+    ) -> Result<(), String> {
         let partition_table = PartitionTable::default();
 
         let mut lic_start: Option<u32> = None;
         let mut lic_end: Option<u32> = None;
-        partition_table.iter_storage(flash_storage, false).for_each(|partition| {
-            if let Ok(partition) = partition {
-                if partition.name() == "lic" {
-                    lic_start = Some(partition.offset);
-                    lic_end = Some(partition.offset + partition.size as u32);
+        partition_table
+            .iter_storage(flash_storage, false)
+            .for_each(|partition| {
+                if let Ok(partition) = partition {
+                    if partition.name() == "lic" {
+                        lic_start = Some(partition.offset);
+                        lic_end = Some(partition.offset + partition.size as u32);
+                    }
                 }
-            }
-        });
+            });
 
         let lic_start = lic_start.ok_or(String::from("Flash region is missing"))?;
 
@@ -63,19 +73,24 @@ impl LicenseManager {
         flash_storage
             .read(lic_start + header.len() as u32, &mut xored_token_bytes)
             .map_err(|_| String::from("Error reading from flash"))?;
-        let xored_token_str = core::str::from_utf8(&xored_token_bytes).map_err(|_| String::from("Decoding failure (1)"))?;
-        let pub_token = decode_with_xor(xored_token_str, obfuscate_key.as_bytes()).map_err(|_| String::from("Decoding failure (2)"))?;
+        let xored_token_str = core::str::from_utf8(&xored_token_bytes)
+            .map_err(|_| String::from("Decoding failure (1)"))?;
+        let pub_token = decode_with_xor(xored_token_str, obfuscate_key.as_bytes())
+            .map_err(|_| String::from("Decoding failure (2)"))?;
 
         // Get Public Key
         let key_bytes = URL_SAFE.decode(public_key).unwrap();
         let key = AsymmetricPublicKey::<V4>::from(&key_bytes).unwrap();
 
         // Verify Token
-        let untrusted_token = UntrustedToken::<Public, V4>::try_from(&pub_token).map_err(|_| String::from("Decoding failure (3)"))?;
+        let untrusted_token = UntrustedToken::<Public, V4>::try_from(&pub_token)
+            .map_err(|_| String::from("Decoding failure (3)"))?;
 
-        let trusted_token = version4::PublicToken::verify(&key, &untrusted_token, None, None).map_err(|_| String::from("Verification error"))?;
+        let trusted_token = version4::PublicToken::verify(&key, &untrusted_token, None, None)
+            .map_err(|_| String::from("Verification error"))?;
 
-        let claims_list: HashMap<String, Value> = serde_json::from_str(trusted_token.payload()).map_err(|_| String::from("Parsing error"))?;
+        let claims_list: HashMap<String, Value> = serde_json::from_str(trusted_token.payload())
+            .map_err(|_| String::from("Parsing error"))?;
 
         let license_str = claims_list
             .get("license")
@@ -83,7 +98,8 @@ impl LicenseManager {
             .as_str()
             .ok_or(String::from("Bad information (1)"))?;
 
-        self.license = serde_json::from_str::<License>(license_str).map_err(|_| String::from("Bad information (2)"))?;
+        self.license = serde_json::from_str::<License>(license_str)
+            .map_err(|_| String::from("Bad information (2)"))?;
 
         Ok(())
     }
@@ -92,7 +108,9 @@ impl LicenseManager {
         let mac_vec = URL_SAFE
             .decode(self.license.mac_addr.as_bytes())
             .map_err(|_| String::from("Decoding device information error"))?;
-        let license_mac_addr: [u8; 6] = mac_vec.try_into().map_err(|_| String::from("Bad device information"))?;
+        let license_mac_addr: [u8; 6] = mac_vec
+            .try_into()
+            .map_err(|_| String::from("Bad device information"))?;
 
         let device_mac_addr = esp_hal::efuse::Efuse::mac_address();
 

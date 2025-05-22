@@ -23,10 +23,15 @@ impl McuWindow {
     /// Instantiate a new MinimalWindowAdaptor
     ///
     /// The `repaint_buffer_type` parameter specify what kind of buffer are passed to the [`SoftwareRenderer`]
-    pub fn new(repaint_buffer_type: slint::platform::software_renderer::RepaintBufferType) -> Rc<Self> {
+    pub fn new(
+        repaint_buffer_type: slint::platform::software_renderer::RepaintBufferType,
+    ) -> Rc<Self> {
         Rc::new_cyclic(|w: &alloc::rc::Weak<Self>| Self {
             window: slint::Window::new(w.clone()),
-            renderer: slint::platform::software_renderer::SoftwareRenderer::new_with_repaint_buffer_type(repaint_buffer_type),
+            renderer:
+                slint::platform::software_renderer::SoftwareRenderer::new_with_repaint_buffer_type(
+                    repaint_buffer_type,
+                ),
             needs_redraw: Default::default(),
             size: Default::default(),
             redraw_signal: Signal::new(),
@@ -39,7 +44,10 @@ impl McuWindow {
     /// in that callback.
     ///
     /// Return true if something was redrawn.
-    pub fn draw_if_needed(&self, render_callback: impl FnOnce(&slint::platform::software_renderer::SoftwareRenderer)) -> bool {
+    pub fn draw_if_needed(
+        &self,
+        render_callback: impl FnOnce(&slint::platform::software_renderer::SoftwareRenderer),
+    ) -> bool {
         if self.needs_redraw.replace(false) {
             render_callback(&self.renderer);
             true
@@ -76,7 +84,9 @@ impl slint::platform::WindowAdapter for McuWindow {
     fn set_size(&self, size: slint::WindowSize) {
         self.size.set(size.to_physical(1.));
         self.window
-            .dispatch_event(slint::platform::WindowEvent::Resized { size: size.to_logical(1.) })
+            .dispatch_event(slint::platform::WindowEvent::Resized {
+                size: size.to_logical(1.),
+            })
     }
 
     fn request_redraw(&self) {

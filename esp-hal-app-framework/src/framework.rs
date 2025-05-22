@@ -1,23 +1,35 @@
-use alloc::{format, rc::Rc, string::{String, ToString}, vec::Vec};
-use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
-use serde::Serialize;
+use alloc::{
+    format,
+    rc::Rc,
+    string::{String, ToString},
+    vec::Vec,
+};
 use core::{cell::RefCell, fmt, net::Ipv4Addr};
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::Spawner;
 use embassy_futures::block_on;
 use embassy_net::Stack;
 use embassy_sync::{
-    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex}, mutex::Mutex, pubsub::{PubSubChannel, Publisher, Subscriber}
+    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
+    mutex::Mutex,
+    pubsub::{PubSubChannel, Publisher, Subscriber},
 };
 use embassy_time::Timer;
-use esp_hal::{gpio::{AnyPin, Input, Output, Pull}, spi::master::Spi};
+use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
+use esp_hal::{
+    gpio::{AnyPin, Input, Output, Pull},
+    spi::master::Spi,
+};
 use esp_mbedtls::TlsReference;
 use esp_storage::FlashStorage;
+use serde::Serialize;
 
 use super::{
     flash_map::FlashMap, framework_web_app::derive_key, ota::ota_task, terminal::Terminal,
 };
-use crate::{ota::OtaRequest, sdcard_store::SDCardStore, web_server::WebServerCommand, wifi::mdns_task};
+use crate::{
+    ota::OtaRequest, sdcard_store::SDCardStore, web_server::WebServerCommand, wifi::mdns_task,
+};
 
 const WIFI_CONFIG_KEY: &str = "__wifi__";
 const FIXED_KEY_CONFIG_KEY: &str = "__fixed_key__";
@@ -58,7 +70,6 @@ pub struct DisplayConfig {
     pub blackout_timeout: Option<u64>,
 }
 
-
 #[derive(Debug, Serialize, Clone)]
 pub enum OtaState {
     VersionAvailable(String, bool),
@@ -71,8 +82,12 @@ pub enum OtaState {
 impl fmt::Display for OtaState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            OtaState::VersionAvailable(ver, new) =>
-                write!(f, "Version {} available{}", ver, if *new { " (new)" } else { "" }),
+            OtaState::VersionAvailable(ver, new) => write!(
+                f,
+                "Version {} available{}",
+                ver,
+                if *new { " (new)" } else { "" }
+            ),
             OtaState::Started => write!(f, "Update started"),
             OtaState::InProgress(stage) => write!(f, "In progress: {}", stage),
             OtaState::Failed(reason) => write!(f, "Update failed: {}", reason),
@@ -146,13 +161,23 @@ pub struct Framework {
     pub web_config_key: String,
     pub ota_state: Option<OtaState>,
 
-    #[cfg(feature="wt32-sc01-plus")]
+    #[cfg(feature = "wt32-sc01-plus")]
     #[allow(clippy::type_complexity)]
-    inner_file_store: Option<Rc<Mutex<CriticalSectionRawMutex, SDCardStore<ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>, 20, 5>>>>,
+    inner_file_store: Option<
+        Rc<
+            Mutex<
+                CriticalSectionRawMutex,
+                SDCardStore<
+                    ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>,
+                    20,
+                    5,
+                >,
+            >,
+        >,
+    >,
 }
 
 impl Framework {
-
     pub fn new(
         settings: FrameworkSettings,
         flash_map: Rc<RefCell<FlashMap<BlockingAsync<FlashStorage>>>>,
@@ -194,7 +219,7 @@ impl Framework {
             web_config_key: String::new(),
             settings,
             ota_state: None,
-            #[cfg(feature="wt32-sc01-plus")]
+            #[cfg(feature = "wt32-sc01-plus")]
             inner_file_store: None,
         };
         let framework = Rc::new(RefCell::new(framework));
@@ -362,16 +387,35 @@ impl Framework {
         Ok(())
     }
 
-    #[cfg(feature="wt32-sc01-plus")]
-    pub async fn set_sdcard_device(framework: Rc<RefCell<Framework>>, sdcard_device: ExclusiveDevice<esp_hal::spi::master::Spi<'static, esp_hal::Async>, esp_hal::gpio::Output<'static>, embedded_hal_bus::spi::NoDelay> ) {
+    #[cfg(feature = "wt32-sc01-plus")]
+    pub async fn set_sdcard_device(
+        framework: Rc<RefCell<Framework>>,
+        sdcard_device: ExclusiveDevice<
+            esp_hal::spi::master::Spi<'static, esp_hal::Async>,
+            esp_hal::gpio::Output<'static>,
+            embedded_hal_bus::spi::NoDelay,
+        >,
+    ) {
         let file_store = SDCardStore::<_, 20, 5>::new(sdcard_device).await;
-        let file_store = Rc::new(Mutex::<CriticalSectionRawMutex, SDCardStore<_, 20, 5>>::new(file_store));
+        let file_store =
+            Rc::new(Mutex::<CriticalSectionRawMutex, SDCardStore<_, 20, 5>>::new(file_store));
         framework.borrow_mut().inner_file_store = Some(file_store);
     }
 
-    #[cfg(feature="wt32-sc01-plus")]
+    #[cfg(feature = "wt32-sc01-plus")]
     #[allow(clippy::type_complexity)]
-    pub fn file_store(&self) -> Rc<Mutex<CriticalSectionRawMutex, SDCardStore<ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>, 20, 5>>> {
+    pub fn file_store(
+        &self,
+    ) -> Rc<
+        Mutex<
+            CriticalSectionRawMutex,
+            SDCardStore<
+                ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>,
+                20,
+                5,
+            >,
+        >,
+    > {
         self.inner_file_store.clone().unwrap()
     }
 
@@ -536,7 +580,7 @@ impl Framework {
     }
 
     pub fn submit_ota_request(&self, ota_request: OtaRequest) {
-        if let Some (curr_ota_stae) = &self.ota_state {
+        if let Some(curr_ota_stae) = &self.ota_state {
             if matches!(curr_ota_stae, OtaState::Started | OtaState::InProgress(_)) {
                 return;
             }
@@ -719,7 +763,7 @@ impl Framework {
     }
     pub fn notify_webapp_url_update(&self, ip_url: &str, name_url: Option<&str>, ssid: &str) {
         for weak_observer in self.observers.iter() {
-     let observer = weak_observer.upgrade().unwrap();
+            let observer = weak_observer.upgrade().unwrap();
             observer
                 .borrow_mut()
                 .on_webapp_url_update(ip_url, name_url, ssid);

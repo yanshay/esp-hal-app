@@ -58,13 +58,19 @@ impl<S: MultiwriteNorFlash> FlashMap<S> {
         if magic.is_none() || magic.unwrap() != name {
             debug!("Existing flash map '{name}' not found, erasing and creating new");
             sequential_storage::erase_all(&mut self.nor_flash, self.addr_range.clone()).await?;
-            self.store(String::from(MAGIC_KEY), String::from(name)).await?;
+            self.store(String::from(MAGIC_KEY), String::from(name))
+                .await?;
         }
 
         Ok(())
     }
 
-    pub async fn new_in_region(nor_flash: S, region: &str, max_buf_size: usize, name: &str) -> Result<Self, Error<S::Error>> {
+    pub async fn new_in_region(
+        nor_flash: S,
+        region: &str,
+        max_buf_size: usize,
+        name: &str,
+    ) -> Result<Self, Error<S::Error>> {
         let mut flash_map = Self {
             addr_range: Range { start: 0, end: 0 },
             nor_flash,
@@ -74,14 +80,16 @@ impl<S: MultiwriteNorFlash> FlashMap<S> {
         let partition_table = PartitionTable::default();
         let mut map_start: Option<u32> = None;
         let mut map_end: Option<u32> = None;
-        partition_table.iter_storage(&mut flash_map, false).for_each(|partition| {
-            if let Ok(partition) = partition {
-                if partition.name() == "map" {
-                    map_start = Some(partition.offset);
-                    map_end = Some(partition.offset + partition.size as u32);
+        partition_table
+            .iter_storage(&mut flash_map, false)
+            .for_each(|partition| {
+                if let Ok(partition) = partition {
+                    if partition.name() == "map" {
+                        map_start = Some(partition.offset);
+                        map_end = Some(partition.offset + partition.size as u32);
+                    }
                 }
-            }
-        });
+            });
 
         if let (Some(map_start), Some(map_end)) = (map_start, map_end) {
             flash_map.addr_range = Range {
@@ -144,7 +152,13 @@ impl<S: MultiwriteNorFlash> FlashMap<S> {
             self.buffer.resize(self.max_buf_size, 0)
         }
 
-        sequential_storage::map::remove_item::<String, _>(&mut self.nor_flash, self.addr_range.clone(), &mut NoCache::new(), &mut self.buffer, &key)
-            .await
+        sequential_storage::map::remove_item::<String, _>(
+            &mut self.nor_flash,
+            self.addr_range.clone(),
+            &mut NoCache::new(),
+            &mut self.buffer,
+            &key,
+        )
+        .await
     }
 }

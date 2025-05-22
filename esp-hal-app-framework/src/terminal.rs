@@ -10,18 +10,22 @@ pub struct Terminal {
 
 pub fn term() -> &'static Terminal {
     #[allow(static_mut_refs)]
-    unsafe { TERM.get().expect("TERM not initialized") }
+    unsafe {
+        TERM.get().expect("TERM not initialized")
+    }
 }
 
 pub fn term_mut() -> &'static mut Terminal {
     #[allow(static_mut_refs)]
-    unsafe { TERM.get_mut().expect("TERM not initialized") }
+    unsafe {
+        TERM.get_mut().expect("TERM not initialized")
+    }
 }
 
 impl Terminal {
     pub fn initialize() {
         let global_term = Self {
-            observers: Vec::new()
+            observers: Vec::new(),
         };
         unsafe {
             #[allow(static_mut_refs)]

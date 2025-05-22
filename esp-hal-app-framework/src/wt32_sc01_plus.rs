@@ -1,11 +1,18 @@
 use alloc::{boxed::Box, rc::Rc, string::String};
-use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use core::{cell::RefCell, slice};
 use embassy_futures::select::{select3, select4, Either3, Either4};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Timer};
+use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use esp_hal::{
-    dma::DmaTxBuf, dma_buffers, gpio::{GpioPin, Input, Level, Output, Pull}, lcd_cam::lcd::i8080::I8080Transfer, ledc::{channel::ChannelIFace, timer::TimerIFace, LowSpeed}, peripherals::LCD_CAM, spi::{self, master::Spi}, time::RateExtU32
+    dma::DmaTxBuf,
+    dma_buffers,
+    gpio::{GpioPin, Input, Level, Output, Pull},
+    lcd_cam::lcd::i8080::I8080Transfer,
+    ledc::{channel::ChannelIFace, timer::TimerIFace, LowSpeed},
+    peripherals::LCD_CAM,
+    spi::{self, master::Spi},
+    time::RateExtU32,
 };
 use mipidsi::models::ST7796;
 use slint::platform::{software_renderer::Rgb565Pixel, update_timers_and_animations, WindowEvent};
@@ -23,7 +30,7 @@ static mut TOTAL_LINES: u64 = 0;
 static mut TOTAL_PIXELS: u64 = 0;
 
 #[allow(clippy::too_many_arguments)]
-pub async fn event_loop<I2C: embedded_hal::i2c::I2c> (
+pub async fn event_loop<I2C: embedded_hal::i2c::I2c>(
     touch_inner: ft6x36::Ft6x36<I2C>,
     ti_irq: Input<'static>,
     window: Rc<McuWindow>,
@@ -415,7 +422,6 @@ where
     pub I2Cx: P,
 }
 
-
 #[allow(non_snake_case)]
 pub struct WT32SC01PlusSDCardPeripherals<S>
 where
@@ -441,7 +447,11 @@ impl WT32SC01Plus {
         sdcard_peripherals: WT32SC01PlusSDCardPeripherals<S>,
         display_orientation: mipidsi::options::Orientation,
         framework: Rc<RefCell<Framework>>,
-    ) -> (Self, WT32SC01PlusRunner<C, P>, ExclusiveDevice<Spi<'a, esp_hal::Async>, Output<'a>, NoDelay> )
+    ) -> (
+        Self,
+        WT32SC01PlusRunner<C, P>,
+        ExclusiveDevice<Spi<'a, esp_hal::Async>, Output<'a>, NoDelay>,
+    )
     where
         C: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
         P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
@@ -464,7 +474,9 @@ impl WT32SC01Plus {
 
         let spi_bus = Spi::new(
             spix,
-            spi::master::Config::default().with_frequency(2.MHz()).with_mode(spi::Mode::_0),
+            spi::master::Config::default()
+                .with_frequency(2.MHz())
+                .with_mode(spi::Mode::_0),
         )
         .unwrap()
         .with_sck(sd_sclk)
@@ -472,8 +484,11 @@ impl WT32SC01Plus {
         .with_mosi(sd_mosi)
         .into_async();
 
-        let sdcard_spi_device: ExclusiveDevice<esp_hal::spi::master::Spi<'_, esp_hal::Async>, esp_hal::gpio::Output<'_>, embedded_hal_bus::spi::NoDelay> =
-          ExclusiveDevice::new_no_delay(spi_bus, sd_cs).unwrap();
+        let sdcard_spi_device: ExclusiveDevice<
+            esp_hal::spi::master::Spi<'_, esp_hal::Async>,
+            esp_hal::gpio::Output<'_>,
+            embedded_hal_bus::spi::NoDelay,
+        > = ExclusiveDevice::new_no_delay(spi_bus, sd_cs).unwrap();
 
         (me, runner, sdcard_spi_device)
     }
@@ -543,7 +558,10 @@ where
         let di_wr = peripherals.GPIO47;
         let di_dc = peripherals.GPIO0;
 
-        let i8080_config = esp_hal::lcd_cam::lcd::i8080::Config { frequency: 40.MHz(), ..Default::default() };
+        let i8080_config = esp_hal::lcd_cam::lcd::i8080::Config {
+            frequency: 40.MHz(),
+            ..Default::default()
+        };
 
         let mut i8080 = esp_hal::lcd_cam::lcd::i8080::I8080::new(
             lcd_cam.lcd,
@@ -632,7 +650,9 @@ where
             mipidsi::options::Rotation::Deg0 => (320, 480, ft6x36::Orientation::Portrait), // ?? orientation not tested
             mipidsi::options::Rotation::Deg180 => (320, 480, ft6x36::Orientation::InvertedPortrait), // ?? orientation not tested
             mipidsi::options::Rotation::Deg90 => (480, 320, ft6x36::Orientation::Landscape),
-            mipidsi::options::Rotation::Deg270 => (480, 320, ft6x36::Orientation::InvertedLandscape),
+            mipidsi::options::Rotation::Deg270 => {
+                (480, 320, ft6x36::Orientation::InvertedLandscape)
+            }
         };
 
         let size = slint::PhysicalSize::new(width, height);
@@ -644,7 +664,10 @@ where
         }))
         .expect("backend already initialized");
 
-        let mut touch_inner = ft6x36::Ft6x36::new(ti_i2c, ft6x36::Dimension((height-1) as u16, (width -1) as u16));
+        let mut touch_inner = ft6x36::Ft6x36::new(
+            ti_i2c,
+            ft6x36::Dimension((height - 1) as u16, (width - 1) as u16),
+        );
         touch_inner.set_orientation(ft6x36orientation);
         touch_inner.init().unwrap();
 
@@ -656,7 +679,6 @@ where
                 pin_config: esp_hal::ledc::channel::config::PinConfig::PushPull,
             })
             .unwrap();
-
 
         self.init_done.signal(Ok(()));
 
@@ -677,7 +699,9 @@ where
 // == WT32-SC01 Fast Display Bus instead of slow display_interface_parallel_gpio bus ================================================================
 // Not really needed since we use DMA now, so this is used only for setup, but may be useful for fast gpio in the future, so using this implementation
 
+#[derive(Default)]
 pub struct SC01DislpayOutputBus {}
+
 const FAST: bool = true;
 impl SC01DislpayOutputBus {
     pub fn new() -> Self {

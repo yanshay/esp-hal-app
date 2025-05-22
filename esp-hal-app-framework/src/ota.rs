@@ -185,9 +185,7 @@ pub async fn ota_task(
             match key.trim() {
                 "filename" => filename = Some(value.trim().trim_matches('"')),
                 "crc32" => crc32 = Some(u32::from_str_radix(value.trim().trim_matches('"'), 16)),
-                "filesize" => {
-                    filesize = Some(value.trim().trim_matches('"').parse::<u32>())
-                }
+                "filesize" => filesize = Some(value.trim().trim_matches('"').parse::<u32>()),
                 "version" => version = Some(value.trim().trim_matches('"')),
                 _ => (), // Ignore unknown keys
             }
@@ -240,20 +238,29 @@ pub async fn ota_task(
 
     report(Report::Status, "Downloading firmware");
     let bin_filename = format!("{}{}", ota_path, filename);
-    if let Err(e) = conn.initiate_request(
-        true,
-        edge_http::Method::Get,
-        &bin_filename,
-        &[("Host", ota_domain)],
-    ).await {
-        report(Report::Failure, &format!("Failed to initiate request for firmware {e:?}"));
+    if let Err(e) = conn
+        .initiate_request(
+            true,
+            edge_http::Method::Get,
+            &bin_filename,
+            &[("Host", ota_domain)],
+        )
+        .await
+    {
+        report(
+            Report::Failure,
+            &format!("Failed to initiate request for firmware {e:?}"),
+        );
         return;
     }
 
     if let Err(e) = conn.initiate_response().await {
-        report(Report::Failure, &format!("Failed to fetch response for metadata {e:?}"));
+        report(
+            Report::Failure,
+            &format!("Failed to fetch response for metadata {e:?}"),
+        );
         return;
-    } 
+    }
 
     let status_code = conn.headers().unwrap().code;
     info!("Response code {}", status_code);
@@ -286,7 +293,11 @@ pub async fn ota_task(
             .len()
             .min((filesize - bytes_read).try_into().unwrap());
 
-        if conn.read_exact(&mut data_buf[..bytes_to_read]).await.is_ok() {
+        if conn
+            .read_exact(&mut data_buf[..bytes_to_read])
+            .await
+            .is_ok()
+        {
             bytes_read += bytes_to_read as u32;
 
             if bytes_to_read == 0 {

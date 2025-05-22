@@ -13,11 +13,17 @@ use embassy_net::{Runner, Stack};
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
 use embassy_time::{with_timeout, Duration, Timer};
 use embedded_io_async::{Read as _, Write as _};
-use esp_wifi::wifi::{AccessPointConfiguration, AccessPointInfo, Configuration, WifiApDevice, WifiDevice, WifiStaDevice};
+use esp_wifi::wifi::{
+    AccessPointConfiguration, AccessPointInfo, Configuration, WifiApDevice, WifiDevice,
+    WifiStaDevice,
+};
 
 use deku::DekuContainerRead as _;
 
-use super::{framework::{Framework, WebConfigMode}, improv_wifi::*};
+use super::{
+    framework::{Framework, WebConfigMode},
+    improv_wifi::*,
+};
 
 #[embassy_executor::task]
 #[allow(clippy::too_many_arguments)]
@@ -25,20 +31,26 @@ pub async fn connection(
     mut controller: esp_wifi::wifi::WifiController<'static>,
     sta_stack: Stack<'static>,
     ap_stack: Stack<'static>,
-    #[cfg(feature="improv-jtag-serial")]
-    mut rx: esp_hal::usb_serial_jtag::UsbSerialJtagRx<'static, esp_hal::Async>,
-    #[cfg(feature="improv-jtag-serial")]
-    mut tx: esp_hal::usb_serial_jtag::UsbSerialJtagTx<'static, esp_hal::Async>,
-    #[cfg(feature="improv-uart")]
-    mut rx: esp_hal::uart::UartRx<'static, esp_hal::Async>,
-    #[cfg(feature="improv-uart")]
-    mut tx: esp_hal::uart::UartTx<'static, esp_hal::Async>,
+    #[cfg(feature = "improv-jtag-serial")] mut rx: esp_hal::usb_serial_jtag::UsbSerialJtagRx<
+        'static,
+        esp_hal::Async,
+    >,
+    #[cfg(feature = "improv-jtag-serial")] mut tx: esp_hal::usb_serial_jtag::UsbSerialJtagTx<
+        'static,
+        esp_hal::Async,
+    >,
+    #[cfg(feature = "improv-uart")] mut rx: esp_hal::uart::UartRx<'static, esp_hal::Async>,
+    #[cfg(feature = "improv-uart")] mut tx: esp_hal::uart::UartTx<'static, esp_hal::Async>,
     framework: Rc<RefCell<Framework>>,
 ) {
     let ap_addr = framework.borrow().settings.ap_addr;
     let app_cargo_pkg_name = framework.borrow().settings.app_cargo_pkg_name;
     let app_cargo_pkg_version = framework.borrow().settings.app_cargo_pkg_version;
-    let prefix = if framework.borrow().settings.web_server_https { "https" } else { "http" };
+    let prefix = if framework.borrow().settings.web_server_https {
+        "https"
+    } else {
+        "http"
+    };
 
     let spawner = embassy_executor::Spawner::for_current_executor().await;
 
@@ -46,9 +58,9 @@ pub async fn connection(
         let data = packet.to_bytes().unwrap();
         tx.write(&data).await.unwrap();
         if flush {
-            #[cfg(feature="improv-jtag-serial")]
+            #[cfg(feature = "improv-jtag-serial")]
             tx.flush().await.unwrap();
-            #[cfg(feature="improv-uart")]
+            #[cfg(feature = "improv-uart")]
             tx.flush_async().await.unwrap();
         }
         // embedded_io_async usage if needed:
@@ -69,8 +81,11 @@ pub async fn connection(
     let mut credentials_available = false;
 
     if framework.borrow().wifi_ssid.is_some() {
-        ssid = heapless::String::<32>::from_str(framework.borrow().wifi_ssid.as_ref().unwrap()).unwrap_or_default();
-        password = heapless::String::<64>::from_str(framework.borrow().wifi_password.as_ref().unwrap()).unwrap_or_default();
+        ssid = heapless::String::<32>::from_str(framework.borrow().wifi_ssid.as_ref().unwrap())
+            .unwrap_or_default();
+        password =
+            heapless::String::<64>::from_str(framework.borrow().wifi_password.as_ref().unwrap())
+                .unwrap_or_default();
         credentials_available = true;
     }
 
@@ -85,15 +100,22 @@ pub async fn connection(
         // spawner.spawn(crate::framework::wifi::ap_net_task(ap_runner)).ok();
         spawner.spawn(dhcp_server(ap_stack, framework.clone())).ok();
         if framework.borrow().settings.web_server_captive {
-            spawner.spawn(captive_portal(ap_stack, framework.clone())).ok();
+            spawner
+                .spawn(captive_portal(ap_stack, framework.clone()))
+                .ok();
         }
         Timer::after(Duration::from_millis(1000)).await; // why wait (in original example)
-        { // Important: Don't remove: block to drop framework_borrow
+        {
+            // Important: Don't remove: block to drop framework_borrow
             let mut framework_borrow = framework.borrow_mut();
             framework_borrow.start_web_app(ap_stack, WebConfigMode::AP);
             drop(framework_borrow); // adding explicit drop, just in case
         }
-        framework.borrow_mut().report_wifi( Some(Ipv4Addr::new(ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3)), true, app_cargo_pkg_name);
+        framework.borrow_mut().report_wifi(
+            Some(Ipv4Addr::new(ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3)),
+            true,
+            app_cargo_pkg_name,
+        );
 
         term_info!("WiFi Credentions not Configured.");
         term_info!("Provide WiFi credentials using either:");
@@ -124,8 +146,8 @@ pub async fn connection(
 
         // When using esp-flash web installer we miss the request for status that comes right after
         //   installation completes, therefore we send status w/o being asked.
-        // Also, if we send too early, data doesn't arrive properly, therefore the wait before. 
-        // If there is no one on the other side of the serial this will hang, but it doesn't matter much, 
+        // Also, if we send too early, data doesn't arrive properly, therefore the wait before.
+        // If there is no one on the other side of the serial this will hang, but it doesn't matter much,
         //   since if there's no one on the other side no point in this anyway, but need to be aware of that
         //   in case of future code changes
         // Howevere, some edge cases were seen where I suspect were caused by this code hanging, so I added a timeout.
@@ -138,7 +160,6 @@ pub async fn connection(
         let mut temp_buf = [0u8; 40];
 
         'improv_loop: loop {
-
             let r = rx.read(&mut temp_buf).await;
 
             match r {
@@ -154,7 +175,7 @@ pub async fn connection(
                     // Try to parse packets from the buffer as long as data is available
                     'process_data: while !buffer.is_empty() {
                         // Attempt to parse a packet from the buffer
-                        match  ImprovWifiPacket::from_bytes((buffer.as_ref(), 0)) {
+                        match ImprovWifiPacket::from_bytes((buffer.as_ref(), 0)) {
                             Ok((rest, packet)) => {
                                 // Update the buffer by removing the parsed data (do it now to save time after send later)
                                 let parsed_len = buffer.len() - rest.0.len();
@@ -166,7 +187,9 @@ pub async fn connection(
                                         ..
                                     }) => {
                                         // TODO: check wifi state and respond accordingly
-                                        let response = ImprovWifiPacket::new_current_state(CurrentStateOption::Ready);
+                                        let response = ImprovWifiPacket::new_current_state(
+                                            CurrentStateOption::Ready,
+                                        );
                                         send_packet(response, false).await;
                                     }
                                     ImprovWifiPacketData::RPC(RPCCommandStruct {
@@ -193,12 +216,16 @@ pub async fn connection(
                                             scan_type: esp_wifi::wifi::ScanTypeConfig::default(),
                                         };
                                         info!("Scanning for available WiFi networks");
-                                        let scan_res = controller.scan_with_config_async::<50>(cfg).await;
+                                        let scan_res =
+                                            controller.scan_with_config_async::<50>(cfg).await;
 
                                         if let Ok(scan_results) = scan_res {
                                             let mut seen = hashbrown::HashSet::new();
-                                            let unique_aps: Vec<AccessPointInfo> =
-                                                scan_results.0.into_iter().filter(|item| seen.insert(item.ssid.clone())).collect();
+                                            let unique_aps: Vec<AccessPointInfo> = scan_results
+                                                .0
+                                                .into_iter()
+                                                .filter(|item| seen.insert(item.ssid.clone()))
+                                                .collect();
                                             for ap_info in unique_aps {
                                                 let response =
                                                     ImprovWifiPacket::new_rpc_result(RPCResultStruct::new_response_to_request_scanned_wifi_networks(
@@ -209,11 +236,14 @@ pub async fn connection(
                                                 send_packet(response, true).await;
                                             }
                                         } else {
-                                            term_error!("Error scanning wifi networks {:?}", scan_res);
+                                            term_error!(
+                                                "Error scanning wifi networks {:?}",
+                                                scan_res
+                                            );
                                         }
                                         let response =
                                             ImprovWifiPacket::new_rpc_result(RPCResultStruct::new_response_to_request_scanned_wifi_networks_end());
-                                        send_packet(response,true).await;
+                                        send_packet(response, true).await;
                                     }
 
                                     ImprovWifiPacketData::RPC(RPCCommandStruct {
@@ -224,34 +254,55 @@ pub async fn connection(
                                             }),
                                         ..
                                     }) => {
-                                        let response = ImprovWifiPacket::new_current_state(CurrentStateOption::Provisioning);
+                                        let response = ImprovWifiPacket::new_current_state(
+                                            CurrentStateOption::Provisioning,
+                                        );
                                         send_packet(response, true).await;
-                                        // If Acess Point is active stop it from now on, 
+                                        // If Acess Point is active stop it from now on,
                                         // For now to activate back need to restart device
-                                        if ap_active { 
+                                        if ap_active {
                                             term_info!("ImprovWiFi setup: Stopping Acess Point");
                                             framework.borrow().stop_web_app(); // disable because it was started for Access Point mode configuration
                                             let _ = controller.disconnect_async().await;
                                             let _ = controller.stop_async().await;
                                             ap_active = false;
                                         }
-                                        let client_config = esp_wifi::wifi::Configuration::Client(esp_wifi::wifi::ClientConfiguration {
-                                            ssid: heapless::String::<32>::from_str(<&str>::from(&improv_ssid)).unwrap(),
-                                            password: heapless::String::<64>::from_str(<&str>::from(&improv_password)).unwrap(),
-                                            ..Default::default()
-                                        });
-                                        term_info!("ImprovWiFi: Credentials check - WiFi '{}'", <&str>::from(&improv_ssid));
+                                        let client_config = esp_wifi::wifi::Configuration::Client(
+                                            esp_wifi::wifi::ClientConfiguration {
+                                                ssid: heapless::String::<32>::from_str(
+                                                    <&str>::from(&improv_ssid),
+                                                )
+                                                .unwrap(),
+                                                password: heapless::String::<64>::from_str(
+                                                    <&str>::from(&improv_password),
+                                                )
+                                                .unwrap(),
+                                                ..Default::default()
+                                            },
+                                        );
+                                        term_info!(
+                                            "ImprovWiFi: Credentials check - WiFi '{}'",
+                                            <&str>::from(&improv_ssid)
+                                        );
                                         controller.set_configuration(&client_config).unwrap();
                                         let _ = controller.start_async().await;
                                         let connect_res = controller.connect_async().await;
                                         let _ = controller.stop_async().await;
                                         if connect_res.is_ok() {
-                                            ssid = heapless::String::<32>::from_str(<&str>::from(&improv_ssid)).unwrap();
-                                            password = heapless::String::<64>::from_str(<&str>::from(&improv_password)).unwrap();
+                                            ssid = heapless::String::<32>::from_str(<&str>::from(
+                                                &improv_ssid,
+                                            ))
+                                            .unwrap();
+                                            password = heapless::String::<64>::from_str(
+                                                <&str>::from(&improv_password),
+                                            )
+                                            .unwrap();
                                             term_info!("ImprovWifi: Credentials Ok");
                                             break 'improv_loop;
                                         } else {
-                                            let response = ImprovWifiPacket::new_error_state(ErrorStateOption::UnableToConnect);
+                                            let response = ImprovWifiPacket::new_error_state(
+                                                ErrorStateOption::UnableToConnect,
+                                            );
                                             send_packet(response, true).await;
                                             term_info!("ImprovWiFi: Credentials incorrect");
                                         }
@@ -262,7 +313,6 @@ pub async fn connection(
                                 if buffer.is_empty() {
                                     break 'process_data; // skips one empty iteration over no data to speed things up
                                 }
-
                             }
                             Err(deku::DekuError::Incomplete(_)) => {
                                 // debug!("Incomplete Deku data, will get more");
@@ -273,18 +323,20 @@ pub async fn connection(
                                 // let response = ImprovWifiPacket::new_error_state(ErrorStateOption::InvalidRPCPacket);
                                 // send_packet(response).await;
 
-                                // esp-web-tools doen't deal well with error messages. 
+                                // esp-web-tools doen't deal well with error messages.
                                 // usually errors take place at the beginning of interaction and a few bytes are missed when it wants to send RequestCurrentState
                                 // So let's send it, shouldn't hurt, and would probably help
 
                                 // check that byte before last, checksum is 0xe6
-                                if buffer.len()>1 && buffer[buffer.len()-2] == 0xe6 {
-                                    let response = ImprovWifiPacket::new_rpc_result(RPCResultStruct::new_response_to_request_device_information(
-                                        app_cargo_pkg_name,
-                                        app_cargo_pkg_version,
-                                        "ESP32S3",
-                                        "WT32-SC01-Plus",
-                                    ));
+                                if buffer.len() > 1 && buffer[buffer.len() - 2] == 0xe6 {
+                                    let response = ImprovWifiPacket::new_rpc_result(
+                                        RPCResultStruct::new_response_to_request_device_information(
+                                            app_cargo_pkg_name,
+                                            app_cargo_pkg_version,
+                                            "ESP32S3",
+                                            "WT32-SC01-Plus",
+                                        ),
+                                    );
                                     send_packet(response, false).await;
                                 }
                                 if let Some(pos) = buffer.iter().position(|&x| x == 10) {
@@ -336,11 +388,12 @@ pub async fn connection(
         }
 
         if !matches!(controller.is_started(), Ok(true)) {
-            let client_config = esp_wifi::wifi::Configuration::Client(esp_wifi::wifi::ClientConfiguration {
-                ssid: ssid.clone(),
-                password: password.clone(),
-                ..Default::default()
-            });
+            let client_config =
+                esp_wifi::wifi::Configuration::Client(esp_wifi::wifi::ClientConfiguration {
+                    ssid: ssid.clone(),
+                    password: password.clone(),
+                    ..Default::default()
+                });
             controller.set_configuration(&client_config).unwrap();
             trace!("Starting wifi");
             controller.start_async().await.unwrap();
@@ -365,22 +418,32 @@ pub async fn connection(
                 loop {
                     if let Some(config) = sta_stack.config_v4() {
                         term_info!("Received IP: {}", config.address);
-                        framework.borrow_mut()
-                            .report_wifi(Some(config.address.address()), false, &ssid);
+                        framework.borrow_mut().report_wifi(
+                            Some(config.address.address()),
+                            false,
+                            &ssid,
+                        );
                         if improv_wifi_bootstrap {
                             // ignore warning, it's wrong, there's a drop below
-                            let res = framework.borrow_mut().set_wifi_credentials(&ssid, &password); // need to be on separate line (due to borrowing)
+                            let res = framework
+                                .borrow_mut()
+                                .set_wifi_credentials(&ssid, &password); // need to be on separate line (due to borrowing)
                             match res {
                                 Ok(_) => {
-                                    let response = ImprovWifiPacket::new_current_state(CurrentStateOption::Provisioned);
+                                    let response = ImprovWifiPacket::new_current_state(
+                                        CurrentStateOption::Provisioned,
+                                    );
                                     send_packet(response, true).await;
 
-                                    framework.borrow_mut().start_web_app(sta_stack, WebConfigMode::STA);
+                                    framework
+                                        .borrow_mut()
+                                        .start_web_app(sta_stack, WebConfigMode::STA);
 
-                                    let response = ImprovWifiPacket::new_rpc_result(RPCResultStruct::new_response_to_send_wifi_settings(&format!(
-                                        "{prefix}://{}",
-                                        config.address.address()
-                                    )));
+                                    let response = ImprovWifiPacket::new_rpc_result(
+                                        RPCResultStruct::new_response_to_send_wifi_settings(
+                                            &format!("{prefix}://{}", config.address.address()),
+                                        ),
+                                    );
                                     term_info!("Stored credentials in flash");
                                     send_packet(response, true).await;
                                 }
@@ -417,15 +480,21 @@ pub async fn connection(
 async fn dhcp_server(stack: Stack<'static>, framework: Rc<RefCell<Framework>>) {
     let ap_addr = framework.borrow().settings.ap_addr;
     let mut server: edge_dhcp::server::Server<fn() -> u64, 3> =
-        edge_dhcp::server::Server::new_with_et(Ipv4Addr::new(ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3));
+        edge_dhcp::server::Server::new_with_et(Ipv4Addr::new(
+            ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3,
+        ));
     let mut gw = [Ipv4Addr::new(ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3)];
-    let mut server_options = edge_dhcp::server::ServerOptions::new(Ipv4Addr::new(ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3), Some(&mut gw));
+    let mut server_options = edge_dhcp::server::ServerOptions::new(
+        Ipv4Addr::new(ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3),
+        Some(&mut gw),
+    );
     let dnss = [Ipv4Addr::new(ap_addr.0, ap_addr.1, ap_addr.2, ap_addr.3)];
     server_options.dns = &dnss;
     // server_options.lease_duration_secs = 5;
 
     let mut buf = vec![0; 512];
-    let udp_buffers: edge_nal_embassy::UdpBuffers<1, 512, 512, 1> = edge_nal_embassy::UdpBuffers::new();
+    let udp_buffers: edge_nal_embassy::UdpBuffers<1, 512, 512, 1> =
+        edge_nal_embassy::UdpBuffers::new();
     let udp = edge_nal_embassy::Udp::new(stack, &udp_buffers);
     let addr = core::net::SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, DEFAULT_SERVER_PORT);
     let mut socket = udp.bind(core::net::SocketAddr::V4(addr)).await.unwrap();
@@ -437,7 +506,8 @@ async fn dhcp_server(stack: Stack<'static>, framework: Rc<RefCell<Framework>>) {
 #[embassy_executor::task]
 async fn captive_portal(stack: Stack<'static>, framework: Rc<RefCell<Framework>>) {
     let ap_addr = framework.borrow().settings.ap_addr;
-    let udp_buffers: edge_nal_embassy::UdpBuffers<1, 512, 512, 1> = edge_nal_embassy::UdpBuffers::new();
+    let udp_buffers: edge_nal_embassy::UdpBuffers<1, 512, 512, 1> =
+        edge_nal_embassy::UdpBuffers::new();
     let udp = edge_nal_embassy::Udp::new(stack, &udp_buffers);
 
     let mut tx_buf = vec![0; 512];
@@ -472,19 +542,32 @@ pub async fn mdns_task(framework: Rc<RefCell<Framework>>) {
     info!("mdns_task started (not yet functional, need IP)");
     let stack = framework.borrow().stack;
     let (recv_buf, send_buf) = (
-        Box::new(edge_mdns::buf::VecBufAccess::<NoopRawMutex,512>::new()),
-        Box::new(edge_mdns::buf::VecBufAccess::<NoopRawMutex,512>::new()),
+        Box::new(edge_mdns::buf::VecBufAccess::<NoopRawMutex, 512>::new()),
+        Box::new(edge_mdns::buf::VecBufAccess::<NoopRawMutex, 512>::new()),
     );
-    let udp_buffers: Box<edge_nal_embassy::UdpBuffers<1, 512, 512, 1>> = Box::new(edge_nal_embassy::UdpBuffers::new());
+    let udp_buffers: Box<edge_nal_embassy::UdpBuffers<1, 512, 512, 1>> =
+        Box::new(edge_nal_embassy::UdpBuffers::new());
     let udp = edge_nal_embassy::Udp::new(stack, &udp_buffers);
-    let mut socket = edge_mdns::io::bind(&udp, DEFAULT_SOCKET, Some(Ipv4Addr::UNSPECIFIED), Some(0)).await.unwrap();
+    let mut socket =
+        edge_mdns::io::bind(&udp, DEFAULT_SOCKET, Some(Ipv4Addr::UNSPECIFIED), Some(0))
+            .await
+            .unwrap();
     let (recv, send) = socket.split();
     let signal = Signal::<NoopRawMutex, ()>::new();
-    let mdns = Mdns::new(Some(Ipv4Addr::UNSPECIFIED), Some(0), recv, send, *recv_buf, *send_buf, |buf| getrandom::getrandom(buf).unwrap(), &signal);
+    let mdns = Mdns::new(
+        Some(Ipv4Addr::UNSPECIFIED),
+        Some(0),
+        recv,
+        send,
+        *recv_buf,
+        *send_buf,
+        |buf| getrandom::getrandom(buf).unwrap(),
+        &signal,
+    );
     let device_name = framework.borrow().device_name.as_ref().unwrap().clone();
 
     Framework::wait_for_wifi(&framework).await;
-    let address = stack.config_v4().unwrap().address.address(); 
+    let address = stack.config_v4().unwrap().address.address();
 
     let host = edge_mdns::host::Host {
         hostname: &device_name,
@@ -492,6 +575,8 @@ pub async fn mdns_task(framework: Rc<RefCell<Framework>>) {
         ipv6: Ipv6Addr::UNSPECIFIED,
         ttl: edge_mdns::domain::base::Ttl::from_secs(60),
     };
-    info!("mDNS active with HOST {}, IP: {}",host.hostname, host.ipv4);
-    mdns.run(edge_mdns::HostAnswersMdnsHandler::new(&host)).await.unwrap();
+    info!("mDNS active with HOST {}, IP: {}", host.hostname, host.ipv4);
+    mdns.run(edge_mdns::HostAnswersMdnsHandler::new(&host))
+        .await
+        .unwrap();
 }

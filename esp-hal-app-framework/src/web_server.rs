@@ -1,6 +1,10 @@
 use core::cell::RefCell;
 
-use alloc::{format, rc::Rc, string::{String, ToString}};
+use alloc::{
+    format,
+    rc::Rc,
+    string::{String, ToString},
+};
 use embassy_futures::select::select;
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, pubsub::WaitResult};
@@ -26,7 +30,7 @@ use super::{
 
 pub struct WebAppRunner<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder + 'static> {
     framework: Rc<RefCell<Framework>>,
-    generic_runner: GenericRunner<WebAppBuilder<NestedMainAppBuilder>,WebAppState>
+    generic_runner: GenericRunner<WebAppBuilder<NestedMainAppBuilder>, WebAppState>,
 }
 
 impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> WebAppRunner<NestedMainAppBuilder> {
@@ -43,7 +47,7 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> WebAppRunner<NestedM
             tls_certificate: framework.borrow().settings.web_server_tls_certificate,
             tls_private_key: framework.borrow().settings.web_server_tls_private_key,
         };
-        let generic_runner = GenericRunner::<WebAppBuilder<NestedMainAppBuilder>,WebAppState>::new(
+        let generic_runner = GenericRunner::<WebAppBuilder<NestedMainAppBuilder>, WebAppState>::new(
             framework.clone(),
             web_server_config,
             app_router,
@@ -96,7 +100,6 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> WebAppRunner<NestedM
     }
 }
 
-
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Generic Web Application Runner - To be used for generic web applications (on unconflicting ports with Web Config)
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -105,7 +108,7 @@ pub struct GenericRunner<GenericAppProps, GenericAppState>
 where
     // GenericAppBuilder : AppWithStateBuilder + 'static,
     GenericAppProps: AppWithStateBuilder + 'static,
-    GenericAppState: 'static
+    GenericAppState: 'static,
 {
     web_server_config: WebServerConfig,
     app_router: &'static AppRouter<GenericAppProps>,
@@ -115,10 +118,10 @@ where
     tls: TlsReference<'static>,
 }
 
-impl<GenericAppProps, GenericAppState> GenericRunner<GenericAppProps, GenericAppState> 
+impl<GenericAppProps, GenericAppState> GenericRunner<GenericAppProps, GenericAppState>
 where
     GenericAppProps: AppWithStateBuilder<State = GenericAppState> + 'static,
-    GenericAppState: 'static
+    GenericAppState: 'static,
 {
     pub fn new(
         framework: Rc<RefCell<Framework>>,
@@ -126,7 +129,7 @@ where
         app_router: &'static AppRouter<GenericAppProps>,
         app_state: &'static GenericAppState,
         web_server_commands: &'static WebServerCommands,
-        config: Config<Duration>
+        config: Config<Duration>,
     ) -> Self {
         let myself = Self {
             web_server_config,
@@ -152,7 +155,6 @@ where
         )
         .await;
     }
-
 }
 
 #[derive(Clone)]
@@ -183,10 +185,9 @@ async fn web_task<GenericAppProps, GenericAppState>(
     mut web_server_commands: WebServerSubscriber,
     tls: TlsReference<'static>,
     state: &'static GenericAppState,
-) 
-where
+) where
     GenericAppProps: AppWithStateBuilder<State = GenericAppState> + 'static,
-    GenericAppState: 'static
+    GenericAppState: 'static,
 {
     let mut command = None;
 
@@ -201,7 +202,15 @@ where
             }
             Some(embassy_sync::pubsub::WaitResult::Message(WebServerCommand::Start(stack))) => {
                 let res = select(
-                    my_listen_and_serve(web_server_config.clone(), task_id, app, config, stack, tls, state),
+                    my_listen_and_serve(
+                        web_server_config.clone(),
+                        task_id,
+                        app,
+                        config,
+                        stack,
+                        tls,
+                        state,
+                    ),
                     web_server_commands.next_message_pure(),
                 )
                 .await;
@@ -311,7 +320,10 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
         let mut socket =
             embassy_net::tcp::TcpSocket::new(stack, &mut tcp_rx_buffer, &mut tcp_tx_buffer);
 
-        info!("{} {} Web Application: Listening on TCP port:{}...", web_server_config.web_app_name, task_id, port);
+        info!(
+            "{} {} Web Application: Listening on TCP port:{}...",
+            web_server_config.web_app_name, task_id, port
+        );
 
         if let Err(err) = socket.accept(port).await {
             warn!("{}: accept error: {:?}", task_id, err);
@@ -320,10 +332,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
 
         let remote_endpoint = socket.remote_endpoint();
 
-        info!(
-            "{}: Connected from {:?}",
-            task_id, remote_endpoint
-        );
+        info!("{}: Connected from {:?}", task_id, remote_endpoint);
         let certificate = web_server_config.tls_certificate;
         let private_key = web_server_config.tls_private_key;
 
@@ -375,8 +384,7 @@ pub struct SessionWrapper<'a> {
     session: Rc<Mutex<NoopRawMutex, Session<'a, TcpSocket<'a>>>>,
 }
 
-impl<'s> SessionWrapper<'s>
-{
+impl<'s> SessionWrapper<'s> {
     pub fn new(session: Session<'s, TcpSocket<'s>>) -> Self {
         Self {
             session: Rc::new(Mutex::new(session)),

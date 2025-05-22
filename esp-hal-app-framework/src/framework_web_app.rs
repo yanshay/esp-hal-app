@@ -26,10 +26,7 @@ use picoserve::{
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use crate::{
-    framework::Framework,
-    ota::OtaRequest,
-};
+use crate::{framework::Framework, ota::OtaRequest};
 
 #[derive(Clone, Copy)]
 pub struct Encryption(pub &'static RefCell<Vec<u8>>);
@@ -469,7 +466,10 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder
                 let framework = framework_clone_get.borrow();
                 ready(
                     OtaStatusDTO {
-                        status: framework.ota_state.as_ref().map_or(String::new(), |s| s.to_string()),
+                        status: framework
+                            .ota_state
+                            .as_ref()
+                            .map_or(String::new(), |s| s.to_string()),
                         curr_ver: framework.settings.app_cargo_pkg_version.to_string(),
                     }
                     .encrypt(&key.borrow()),

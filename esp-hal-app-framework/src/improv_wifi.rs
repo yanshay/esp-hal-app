@@ -28,12 +28,18 @@ pub struct ImprovWifiPacket {
 }
 
 impl ImprovWifiPacket {
-    fn data_type_writer<W: no_std_io::io::Write>(writer: &mut deku::writer::Writer<W>, data: &ImprovWifiPacketData) -> Result<(), DekuError> {
+    fn data_type_writer<W: no_std_io::io::Write>(
+        writer: &mut deku::writer::Writer<W>,
+        data: &ImprovWifiPacketData,
+    ) -> Result<(), DekuError> {
         let value: u8 = data.deku_id().unwrap();
         value.to_writer(writer, deku::ctx::Endian::Big)
     }
 
-    fn data_length_writer<W: no_std_io::io::Write>(writer: &mut deku::writer::Writer<W>, data: &ImprovWifiPacketData) -> Result<(), DekuError> {
+    fn data_length_writer<W: no_std_io::io::Write>(
+        writer: &mut deku::writer::Writer<W>,
+        data: &ImprovWifiPacketData,
+    ) -> Result<(), DekuError> {
         let value: u8 = data.get_data_length();
         value.to_writer(writer, deku::ctx::Endian::Big)
     }
@@ -87,7 +93,9 @@ impl ImprovWifiPacket {
     pub fn to_bytes(&self) -> Result<Vec<u8>, DekuError> {
         let mut bytes = <ImprovWifiPacket as DekuContainerWrite>::to_bytes(self)?;
         let checksum_pos = bytes.len() - 2;
-        let checksum: u8 = bytes[..bytes.len() - 2].iter().fold(0, |acc, &x| acc.wrapping_add(x));
+        let checksum: u8 = bytes[..bytes.len() - 2]
+            .iter()
+            .fold(0, |acc, &x| acc.wrapping_add(x));
         bytes[checksum_pos] = checksum;
         Ok(bytes)
     }
@@ -182,12 +190,18 @@ impl RPCCommandStruct {
         2 + self.data.get_data_length()
     }
 
-    fn command_writer<W: no_std_io::io::Write>(writer: &mut deku::writer::Writer<W>, data: &RPCCommand) -> Result<(), DekuError> {
+    fn command_writer<W: no_std_io::io::Write>(
+        writer: &mut deku::writer::Writer<W>,
+        data: &RPCCommand,
+    ) -> Result<(), DekuError> {
         let value: u8 = data.deku_id().unwrap();
         value.to_writer(writer, deku::ctx::Endian::Big)
     }
 
-    fn data_length_writer<W: no_std_io::io::Write>(writer: &mut deku::writer::Writer<W>, data: &RPCCommand) -> Result<(), DekuError> {
+    fn data_length_writer<W: no_std_io::io::Write>(
+        writer: &mut deku::writer::Writer<W>,
+        data: &RPCCommand,
+    ) -> Result<(), DekuError> {
         let value: u8 = data.get_data_length();
         value.to_writer(writer, deku::ctx::Endian::Big)
     }
@@ -211,7 +225,9 @@ impl RPCCommand {
     pub fn get_data_length(&self) -> u8 {
         // All commands are of data length 0, but writing explicitly
         match self {
-            RPCCommand::SendWifiSettings(send_wifi_settings) => send_wifi_settings.get_data_length(),
+            RPCCommand::SendWifiSettings(send_wifi_settings) => {
+                send_wifi_settings.get_data_length()
+            }
             RPCCommand::RequestCurrentState => 0x00,
             RPCCommand::RequestDeviceInformation => 0x00,
             RPCCommand::RequestScannedWifiNetworks => 0x00,
@@ -249,29 +265,56 @@ impl RPCResultStruct {
         let len: u8 = 1/*command_responded byte */+1 /*data_length byte*/ + Self::get_strings_data_length(&self.strings);
         len
     }
-    fn string_data_length_writer<W: no_std_io::io::Write>(writer: &mut deku::writer::Writer<W>, data: &[DekuString]) -> Result<(), DekuError> {
+    fn string_data_length_writer<W: no_std_io::io::Write>(
+        writer: &mut deku::writer::Writer<W>,
+        data: &[DekuString],
+    ) -> Result<(), DekuError> {
         let value: u8 = Self::get_strings_data_length(data);
         value.to_writer(writer, deku::ctx::Endian::Big)
     }
     fn get_strings_data_length(data: &[DekuString]) -> u8 {
-        let value: u8 = data.iter().fold(0, |acc, x| acc + 1/*string len byte*/ + x.content_len);
+        let value: u8 = data
+            .iter()
+            .fold(0, |acc, x| acc + 1/*string len byte*/ + x.content_len);
         value
     }
 
     // builders
-    pub fn new_response_to_request_device_information(firmware_name: &str, firmware_version: &str, chip: &str, device_name: &str) -> Self {
+    pub fn new_response_to_request_device_information(
+        firmware_name: &str,
+        firmware_version: &str,
+        chip: &str,
+        device_name: &str,
+    ) -> Self {
         Self {
             command_responded: RPCCommand::RequestDeviceInformation.deku_id().unwrap(),
             strings_data_length: 0x00,
-            strings: vec![firmware_name.into(), firmware_version.into(), chip.into(), device_name.into()],
+            strings: vec![
+                firmware_name.into(),
+                firmware_version.into(),
+                chip.into(),
+                device_name.into(),
+            ],
         }
     }
 
-    pub fn new_response_to_request_scanned_wifi_networks(ssid: &str, rssi: &str, auth_required: bool) -> Self {
+    pub fn new_response_to_request_scanned_wifi_networks(
+        ssid: &str,
+        rssi: &str,
+        auth_required: bool,
+    ) -> Self {
         Self {
             command_responded: RPCCommand::RequestScannedWifiNetworks.deku_id().unwrap(),
             strings_data_length: 0x00,
-            strings: vec![ssid.into(), rssi.into(), if auth_required { "YES".into() } else { "NO".into() }],
+            strings: vec![
+                ssid.into(),
+                rssi.into(),
+                if auth_required {
+                    "YES".into()
+                } else {
+                    "NO".into()
+                },
+            ],
         }
     }
 

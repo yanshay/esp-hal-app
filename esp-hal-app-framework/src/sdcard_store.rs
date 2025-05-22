@@ -1,5 +1,6 @@
 use alloc::{
-    string::{FromUtf8Error, String, ToString}, vec::Vec
+    string::{FromUtf8Error, String, ToString},
+    vec::Vec,
 };
 use anyhow::Result as AnyhowResult;
 use embedded_hal_async::spi::SpiDevice;
@@ -138,9 +139,14 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
             MAX_FILES,
             1,
         >::new_with_limits(sdmmc, Clock {}, 5000);
-        let volume0 = if let Ok(volume0) = volume_mgr.open_volume(embedded_sdmmc::asynchronous::VolumeIdx(0)).await {
+        let volume0 = if let Ok(volume0) = volume_mgr
+            .open_volume(embedded_sdmmc::asynchronous::VolumeIdx(0))
+            .await
+        {
             Some(volume0.to_raw_volume())
-        } else { None };
+        } else {
+            None
+        };
 
         Self {
             card_installed: volume0.is_some(),
@@ -150,9 +156,9 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
     }
 
     pub async fn open_volume(&mut self) -> Result<(), SDCardStoreError<SPI>> {
-       let raw_volume = self.take_volume().await?;
-       self.return_volume(raw_volume);
-       Ok(())
+        let raw_volume = self.take_volume().await?;
+        self.return_volume(raw_volume);
+        Ok(())
     }
 
     async fn take_volume(&mut self) -> Result<RawVolume, SDCardStoreError<SPI>> {
@@ -160,7 +166,12 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
             self.card_installed = true;
             return Ok(raw_volume);
         }
-        let raw_volume = self.volume_mgr.open_volume(embedded_sdmmc::asynchronous::VolumeIdx(0)).await.context(OpenVolumeSnafu)?.to_raw_volume();
+        let raw_volume = self
+            .volume_mgr
+            .open_volume(embedded_sdmmc::asynchronous::VolumeIdx(0))
+            .await
+            .context(OpenVolumeSnafu)?
+            .to_raw_volume();
         Ok(raw_volume)
     }
 
