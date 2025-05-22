@@ -111,10 +111,11 @@ pub struct SDCardStore<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: u
     pub card_installed: bool,
 }
 
-const CREATE_MODES: [embedded_sdmmc::asynchronous::Mode; 3] = [
+const CREATE_MODES: [embedded_sdmmc::asynchronous::Mode; 4] = [
     embedded_sdmmc::asynchronous::Mode::ReadWriteCreateOrTruncate,
     embedded_sdmmc::asynchronous::Mode::ReadWriteCreate,
     embedded_sdmmc::asynchronous::Mode::ReadWriteCreateOrAppend,
+    embedded_sdmmc::asynchronous::Mode::ReadWriteAppend,
 ];
 
 type SdCardError<SPI> = <SdCard<SPI, embassy_time::Delay> as BlockDevice>::Error;
@@ -128,7 +129,7 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
             spi,
             embassy_time::Delay,
             AcquireOpts {
-                acquire_retries: 5,
+                acquire_retries: 50,
                 ..Default::default()
             },
         );
@@ -139,19 +140,24 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
             MAX_FILES,
             1,
         >::new_with_limits(sdmmc, Clock {}, 5000);
-        let volume0 = if let Ok(volume0) = volume_mgr
-            .open_volume(embedded_sdmmc::asynchronous::VolumeIdx(0))
-            .await
-        {
-            Some(volume0.to_raw_volume())
-        } else {
-            None
-        };
+
+        let mut volume = None;
+        for _ in 0..5 {
+            if let Ok(volume0) = volume_mgr
+                .open_volume(embedded_sdmmc::asynchronous::VolumeIdx(0))
+                .await
+            {
+                volume = Some(volume0.to_raw_volume());
+                break;
+            } else {
+                volume = None;
+            };
+        }
 
         Self {
-            card_installed: volume0.is_some(),
+            card_installed: volume.is_some(),
             volume_mgr,
-            raw_volume: volume0,
+            raw_volume: volume,
         }
     }
 
@@ -327,15 +333,68 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         self.append_bytes(path, text.as_bytes()).await
     }
 
+    pub async fn create_write_file_bytes(
+        &mut self,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), SDCardStoreError<SPI>> {
+        let file = self
+            .open_file(
+                path,
+                embedded_sdmmc::asynchronous::Mode::ReadWriteCreateOrTruncate,
+            )
+            .await?;
+
+        let file = file.to_file(&self.volume_mgr);
+
+        let res: Result<(), SDCardStoreError<SPI>> = async {
+            file.write(bytes)
+                .await
+                .context(WriteFileSnafu { full_path: path })?;
+            file.flush()
+                .await
+                .context(WriteFileSnafu { full_path: path })?;
+            Ok(())
+        }
+        .await;
+
+        // async finally block
+        file.close().await.context(CloseSnafu {
+            full_path: path,
+            part: "",
+        })?;
+
+        res
+    }
+    pub async fn create_write_file_str(
+        &mut self,
+        path: &str,
+        text: &str,
+    ) -> Result<(), SDCardStoreError<SPI>> {
+        self.create_write_file_bytes(path, text.as_bytes()).await
+    }
+
     pub async fn write_file_bytes(
         &mut self,
         path: &str,
         offset: u32,
         bytes: &[u8],
     ) -> Result<(), SDCardStoreError<SPI>> {
-        let file = self
+        // TODO:    Not sure this is correct, think of the API, if we want this to create a new file
+        let file_open_res = self
             .open_file(path, embedded_sdmmc::asynchronous::Mode::ReadWriteAppend)
-            .await?;
+            .await;
+        let file = match file_open_res {
+            Ok(file) => file,
+            Err(_) => {
+                self.open_file(
+                    path,
+                    embedded_sdmmc::asynchronous::Mode::ReadWriteCreateOrAppend,
+                )
+                .await?
+            }
+        };
+
         let file = file.to_file(&self.volume_mgr);
 
         let res: Result<(), SDCardStoreError<SPI>> = async {
