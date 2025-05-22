@@ -1,13 +1,13 @@
 use alloc::{string::String, vec, vec::Vec};
 use anyhow::{format_err, Result};
 use embedded_hal::{delay::DelayNs, spi::SpiDevice};
-use embedded_sdmmc::sdcard::AcquireOpts;
+use embedded_sdmmc::blocking::sdcard::AcquireOpts;
 
 pub struct Clock;
 
-impl embedded_sdmmc::TimeSource for Clock {
-    fn get_timestamp(&self) -> embedded_sdmmc::Timestamp {
-        embedded_sdmmc::Timestamp {
+impl embedded_sdmmc::blocking::TimeSource for Clock {
+    fn get_timestamp(&self) -> embedded_sdmmc::blocking::Timestamp {
+        embedded_sdmmc::blocking::Timestamp {
             year_since_1970: 30_u8,
             zero_indexed_month: 0,
             zero_indexed_day: 0,
@@ -19,13 +19,13 @@ impl embedded_sdmmc::TimeSource for Clock {
 }
 
 pub struct SDCard<SPI: SpiDevice, DELAYER: DelayNs> {
-    sdmmc: Option<embedded_sdmmc::SdCard<SPI, DELAYER>>,
+    sdmmc: Option<embedded_sdmmc::blocking::SdCard<SPI, DELAYER>>,
 }
 
 impl<SPI: SpiDevice, DELAYER: DelayNs> SDCard<SPI, DELAYER> {
     pub fn new(spi: SPI, delay: DELAYER) -> Self {
         Self {
-            sdmmc: Some(embedded_sdmmc::SdCard::new_with_options(spi, delay, AcquireOpts{
+            sdmmc: Some(embedded_sdmmc::blocking::SdCard::new_with_options(spi, delay, AcquireOpts{
                 acquire_retries: 1,
                 ..Default::default()
             })),
@@ -34,9 +34,9 @@ impl<SPI: SpiDevice, DELAYER: DelayNs> SDCard<SPI, DELAYER> {
 
     pub fn read_file_bin(&mut self, path: &str) -> Result<Vec<u8>> {
         let sdcard = self.sdmmc.take().unwrap();
-        let mut volume_mgr = embedded_sdmmc::VolumeManager::new(sdcard, Clock {});
-        let mut volume0 = volume_mgr
-            .open_volume(embedded_sdmmc::VolumeIdx(0))
+        let volume_mgr = embedded_sdmmc::blocking::VolumeManager::new(sdcard, Clock {});
+        let volume0 = volume_mgr
+            .open_volume(embedded_sdmmc::blocking::VolumeIdx(0))
             .map_err(|err| format_err!("Can't open SSD Volume0 - {:?}", err))?;
 
         let mut dir = volume0.open_root_dir().map_err(|_| format_err!("Can't open SSD root directory"))?;
@@ -52,8 +52,8 @@ impl<SPI: SpiDevice, DELAYER: DelayNs> SDCard<SPI, DELAYER> {
             dir.change_dir(*path_part)
                 .map_err(|e| format_err!("Can't open folder {path_part} in {path}, error {e:?}"))?;
         }
-        let mut file = dir
-            .open_file_in_dir(path_parts[path_parts.len() - 1], embedded_sdmmc::Mode::ReadOnly)
+        let file = dir
+            .open_file_in_dir(path_parts[path_parts.len() - 1], embedded_sdmmc::blocking::Mode::ReadOnly)
             .map_err(|e| format_err!("Can't open file {} in {path}, error: {e:?}", path_parts[path_parts.len() - 1]))?;
 
         let file_length = file.length(); //.map_err(|_| format_err!("Can't read file length of {path}"))?;
