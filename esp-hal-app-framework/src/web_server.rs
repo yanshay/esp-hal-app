@@ -1,6 +1,7 @@
 use core::cell::RefCell;
 
 use alloc::{
+    boxed::Box,
     format,
     rc::Rc,
     string::{String, ToString},
@@ -266,10 +267,11 @@ async fn standalone_captive_redirect_listen_and_serve(
     web_app_domain: String,
 ) {
     let port = 80;
-    let mut tcp_rx_buffer = [0; 512];
-    let mut tcp_tx_buffer = [0; 512];
+    let mut tcp_rx_buffer = Box::new([0; 512]);
+    let mut tcp_tx_buffer = Box::new([0; 512]);
     let mut socket =
-        embassy_net::tcp::TcpSocket::new(stack, &mut tcp_rx_buffer, &mut tcp_tx_buffer);
+        embassy_net::tcp::TcpSocket::new(stack, &mut *tcp_rx_buffer, &mut *tcp_tx_buffer);
+
     loop {
         info!("Captive: listening on TCP:{}...", port);
 
@@ -313,12 +315,13 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
     state: &GenericAppState,
 ) -> ! {
     let port = web_server_config.port;
-    let mut tcp_rx_buffer = [0u8; 1024];
-    let mut tcp_tx_buffer = [0u8; 1024];
-    let mut http_buffer = [0u8; 1024];
+    let mut tcp_rx_buffer = Box::new([0u8; 1024]);
+    let mut tcp_tx_buffer = Box::new([0u8; 1024]);
+    let mut http_buffer = Box::new([0u8; 1024]);
+
     loop {
         let mut socket =
-            embassy_net::tcp::TcpSocket::new(stack, &mut tcp_rx_buffer, &mut tcp_tx_buffer);
+            embassy_net::tcp::TcpSocket::new(stack, &mut *tcp_rx_buffer, &mut *tcp_tx_buffer);
 
         info!(
             "{} {} Web Application: Listening on TCP port:{}...",
@@ -353,7 +356,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
 
             let wrapper = SessionWrapper::new(session);
 
-            match serve_with_state(app, config, &mut http_buffer, wrapper, state).await {
+            match serve_with_state(app, config, &mut *http_buffer, wrapper, state).await {
                 Ok(handled_requests_count) => {
                     info!(
                         "{} requests handled from {:?}",
@@ -363,7 +366,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
                 Err(err) => error!("{:?}", &err),
             }
         } else {
-            match serve_with_state(app, config, &mut http_buffer, socket, state).await {
+            match serve_with_state(app, config, &mut *http_buffer, socket, state).await {
                 Ok(handled_requests_count) => {
                     info!(
                         "{} requests handled from {:?}",

@@ -1,6 +1,7 @@
 use core::cell::RefCell;
 use core::net::SocketAddr;
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::{ffi::CString, format};
 use edge_http::io::client::Connection;
@@ -100,30 +101,34 @@ pub async fn ota_task(
         ..Default::default()
     };
 
-    let tcp_buffers = TcpBuffers::<1, 1024, 16384>::new();
-    let tcp = Tcp::new(stack, &tcp_buffers);
+    let mut tcp_buffers_boxed = Box::new(TcpBuffers::<1, 1024, 16384>::new());
+    let tcp_buffers = &mut *tcp_buffers_boxed;
+    let tcp = Tcp::new(stack, tcp_buffers);
 
     let servername = CString::new(ota_domain).unwrap();
-    let tls_connector = esp_mbedtls::asynch::TlsConnector::new(
+    let tls_connector = Box::new(esp_mbedtls::asynch::TlsConnector::new(
         tcp,
         &servername,
         TlsVersion::Tls1_2,
         certificates,
         tls,
-    );
+    ));
 
     let IpAddress::Ipv4(addr) = ips[0] else {
         report(Report::Failure, "Unsupported reply from Dns");
         return;
     };
 
-    let mut conn_buf = [0_u8; 4096];
-    let mut data_buf = [0; 4096];
-    let mut conn: Connection<_> = Connection::new(
-        &mut conn_buf,
-        &tls_connector,
+    let mut conn_buf_boxed = Box::new([0_u8; 4096]);
+    let conn_buf = &mut *conn_buf_boxed;
+    let mut data_buf_boxed = Box::new([0_u8; 4096]);
+    let data_buf = &mut *data_buf_boxed;
+
+    let mut conn: Box<Connection<_, 32>> = Box::new(Connection::new(
+        &mut *conn_buf,
+        &*tls_connector,
         SocketAddr::new(core::net::IpAddr::V4(addr), 443),
-    );
+    ));
 
     // Get ota.toml
 
@@ -167,12 +172,12 @@ pub async fn ota_task(
     }
 
     // TODO - loop to read until buffer full or nothing to read
-    let Ok(_len) = conn.read(&mut data_buf).await else {
+    let Ok(_len) = conn.read(&mut *data_buf).await else {
         report(Report::Failure, "Failed to read response");
         return;
     };
 
-    let toml = core::str::from_utf8(&data_buf).unwrap_or_default();
+    let toml = core::str::from_utf8(&*data_buf).unwrap_or_default();
     info!("Firmware metadata:\n{}", toml);
 
     let mut filename = None;
