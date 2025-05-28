@@ -2,7 +2,6 @@ use alloc::{
     string::{FromUtf8Error, String, ToString},
     vec::Vec,
 };
-use anyhow::Result as AnyhowResult;
 use embedded_hal_async::spi::SpiDevice;
 use embedded_sdmmc::asynchronous::{
     sdcard::AcquireOpts, BlockDevice, RawFile, RawVolume, SdCard, VolumeManager,
@@ -10,21 +9,7 @@ use embedded_sdmmc::asynchronous::{
 
 use snafu::{prelude::*, IntoError};
 
-pub struct DebugWrap<E>(E);
-
-impl<E: core::fmt::Debug> core::error::Error for DebugWrap<E> {}
-
-impl<E: core::fmt::Debug> core::fmt::Debug for DebugWrap<E> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl<E: core::fmt::Debug> core::fmt::Display for DebugWrap<E> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Debug::fmt(&self.0, f)
-    }
-}
+use crate::utils::DebugWrap;
 
 #[derive(Snafu, Debug)]
 pub enum Error<E>
@@ -118,6 +103,7 @@ const CREATE_MODES: [embedded_sdmmc::asynchronous::Mode; 4] = [
     embedded_sdmmc::asynchronous::Mode::ReadWriteAppend,
 ];
 
+pub type SDCardStoreErrorSource = Error<embedded_sdmmc::asynchronous::SdCardError>; // used for use with Snafu as the error source type
 type SdCardError<SPI> = <SdCard<SPI, embassy_time::Delay> as BlockDevice>::Error;
 type SDCardStoreError<SPI> = Error<SdCardError<SPI>>;
 
@@ -433,7 +419,7 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
     pub async fn read_file_str(
         &mut self,
         path: &str,
-    ) -> AnyhowResult<String, SDCardStoreError<SPI>> {
+    ) -> Result<String, SDCardStoreError<SPI>> {
         let file_bin = self.read_file_bytes(path).await?;
         let file_str = String::from_utf8(file_bin).context(DecodeUTF8Snafu { full_path: path })?;
 
@@ -443,7 +429,7 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
     pub async fn read_create_bytes(
         &mut self,
         path: &str,
-    ) -> AnyhowResult<Vec<u8>, SDCardStoreError<SPI>> {
+    ) -> Result<Vec<u8>, SDCardStoreError<SPI>> {
         let res = self.read_file_bytes(path).await;
         match res {
             Ok(v) => Ok(v),
@@ -460,13 +446,13 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
     pub async fn read_create_str(
         &mut self,
         path: &str,
-    ) -> AnyhowResult<String, SDCardStoreError<SPI>> {
+    ) -> Result<String, SDCardStoreError<SPI>> {
         let v = self.read_create_bytes(path).await?;
         let s = String::from_utf8(v).context(DecodeUTF8Snafu { full_path: path })?;
         Ok(s)
     }
 
-    pub async fn create_file(&mut self, path: &str) -> AnyhowResult<(), SDCardStoreError<SPI>> {
+    pub async fn create_file(&mut self, path: &str) -> Result<(), SDCardStoreError<SPI>> {
         let file = self
             .open_file(
                 path,

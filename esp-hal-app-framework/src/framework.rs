@@ -30,6 +30,7 @@ use super::{
 use crate::{
     ota::OtaRequest, sdcard_store::SDCardStore, web_server::WebServerCommand, wifi::mdns_task,
 };
+use crate::settings::{FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES};
 
 const WIFI_CONFIG_KEY: &str = "__wifi__";
 const FIXED_KEY_CONFIG_KEY: &str = "__fixed_key__";
@@ -396,7 +397,8 @@ impl Framework {
             embedded_hal_bus::spi::NoDelay,
         >,
     ) {
-        let file_store = SDCardStore::<_, 20, 5>::new(sdcard_device).await;
+
+        let file_store = SDCardStore::<_, FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES>::new(sdcard_device).await;
         let file_store =
             Rc::new(Mutex::<CriticalSectionRawMutex, SDCardStore<_, 20, 5>>::new(file_store));
         framework.borrow_mut().inner_file_store = Some(file_store);

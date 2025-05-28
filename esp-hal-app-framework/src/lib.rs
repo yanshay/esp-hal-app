@@ -30,6 +30,7 @@ pub mod web_server;
 pub mod wifi;
 #[macro_use]
 pub mod utils;
+pub mod settings;
 
 extern crate alloc;
 
@@ -39,6 +40,7 @@ pub mod prelude {
     pub use crate::framework::FrameworkSettings;
     pub use crate::license::LicenseManager;
     pub use crate::warn;
+    pub use crate::sdcard_store::{SDCardStore, SDCardStoreErrorSource};
     pub use dbg;
     pub use dbgt;
     pub use debug;

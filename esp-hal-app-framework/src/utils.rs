@@ -19,3 +19,23 @@ pub fn random_u64() -> u64 {
     getrandom::getrandom(&mut buf).unwrap();
     u64::from_le_bytes(buf)
 }
+
+
+// Helper for using Snafu
+
+pub struct DebugWrap<E>(pub E);
+
+impl<E: core::fmt::Debug> core::error::Error for DebugWrap<E> {}
+
+impl<E: core::fmt::Debug> core::fmt::Debug for DebugWrap<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<E: core::fmt::Debug> core::fmt::Display for DebugWrap<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
