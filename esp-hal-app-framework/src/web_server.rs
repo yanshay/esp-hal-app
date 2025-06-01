@@ -317,29 +317,30 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
     let port = web_server_config.port;
     let mut tcp_rx_buffer = Box::new([0u8; 1024]);
     let mut tcp_tx_buffer = Box::new([0u8; 1024]);
-    let mut http_buffer = Box::new([0u8; 1024]);
+    let mut http_buffer = Box::new([0u8; 4096]);
 
     loop {
         let mut socket =
             embassy_net::tcp::TcpSocket::new(stack, &mut *tcp_rx_buffer, &mut *tcp_tx_buffer);
 
         info!(
-            "{} {} Web Application: Listening on TCP port:{}...",
-            web_server_config.web_app_name, task_id, port
+            "[{task_id}] {} Web Application: Listening on TCP port:{}...",
+            web_server_config.web_app_name, port
         );
 
         if let Err(err) = socket.accept(port).await {
-            warn!("{}: accept error: {:?}", task_id, err);
+            warn!("[{task_id}]: accept error: {:?}", err);
             continue;
         }
 
         let remote_endpoint = socket.remote_endpoint();
 
-        info!("{}: Connected from {:?}", task_id, remote_endpoint);
+        debug!("[{task_id}] Connected from {remote_endpoint:?}");
         let certificate = web_server_config.tls_certificate;
         let private_key = web_server_config.tls_private_key;
 
         if web_server_config.tls {
+            debug!("[{task_id}] Serving HTTPS request");
             let session = esp_mbedtls::asynch::Session::new(
                 socket,
                 Mode::Server,
@@ -358,22 +359,25 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
 
             match serve_with_state(app, config, &mut *http_buffer, wrapper, state).await {
                 Ok(handled_requests_count) => {
-                    info!(
-                        "{} requests handled from {:?}",
+                    debug!(
+                        "[{task_id}] {} requests handled from {:?}", 
                         handled_requests_count, remote_endpoint
                     );
                 }
-                Err(err) => error!("{:?}", &err),
+                Err(err) => error!("[{task_id}] Error handling request: {:?}", &err),
             }
         } else {
+            debug!("[{task_id}] Serving HTTP request");
             match serve_with_state(app, config, &mut *http_buffer, socket, state).await {
                 Ok(handled_requests_count) => {
-                    info!(
-                        "{} requests handled from {:?}",
+                    debug!(
+                        "[{task_id}] {} requests handled from {:?}",
                         handled_requests_count, remote_endpoint
                     );
                 }
-                Err(err) => error!("{:?}", &err),
+                Err(err) => {
+                    error!("[{task_id}] Error handling request : {:?}", &err);
+                }
             }
         }
     }
