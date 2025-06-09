@@ -172,12 +172,12 @@ pub async fn ota_task(
     }
 
     // TODO - loop to read until buffer full or nothing to read
-    let Ok(_len) = conn.read(&mut *data_buf).await else {
+    let Ok(len) = conn.read(&mut *data_buf).await else {
         report(Report::Failure, "Failed to read response");
         return;
     };
 
-    let toml = core::str::from_utf8(&*data_buf).unwrap_or_default();
+    let toml = core::str::from_utf8(&data_buf[..len]).unwrap_or_default();
     info!("Firmware metadata:\n{}", toml);
 
     let mut filename = None;
