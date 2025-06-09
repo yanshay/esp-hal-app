@@ -1625,7 +1625,7 @@ dependencies = [
 [[package]]
 name = "embedded-sdmmc"
 version = "0.8.0"
-source = "git+https://github.com/Be-ing/embedded-sdmmc-rs?rev=835b2e4f9d3482b6287f674d7ecf6ae5d0618c18#835b2e4f9d3482b6287f674d7ecf6ae5d0618c18"
+source = "git+https://github.com/yanshay/embedded-sdmmc-rs?branch=yanshay_bisync#fd20d16381488d50dad5273916c8ca471acb7b68"
 dependencies = [
  "bisync",
  "byteorder",
@@ -1886,7 +1886,7 @@ dependencies = [
 
 [[package]]
 name = "esp-hal-app-framework"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1921,6 +1921,7 @@ dependencies = [
  "esp-alloc",
  "esp-backtrace",
  "esp-hal",
+ "esp-hal-app-framework-macros",
  "esp-hal-embassy",
  "esp-hal-ota",
  "esp-mbedtls",
@@ -1954,6 +1955,16 @@ dependencies = [
  "snafu",
  "static_cell",
  "xtensa-lx-rt",
+]
+
+[[package]]
+name = "esp-hal-app-framework-macros"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
 ]
 
 [[package]]

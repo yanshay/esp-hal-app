@@ -13,6 +13,7 @@ use alloc::{
     vec::Vec,
 };
 use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+use framework_macros::include_bytes_gz;
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
 use picoserve::{
@@ -55,8 +56,8 @@ pub trait NestedAppWithWebAppStateBuilder: AppWithStateBuilder<State = WebAppSta
 pub struct WebAppBuilder<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> {
     pub app_builder: NestedMainAppBuilder,
     pub framework: Rc<RefCell<Framework>>,
-    pub captive_html: &'static str,
-    pub web_app_html: &'static str,
+    pub captive_html_gz: &'static [u8],
+    pub web_app_html_gz: &'static [u8],
 }
 
 impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder
@@ -79,13 +80,19 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder
         let router = router
             .route(
                 "/crypto-js-4.2.0.min.js",
-                get_service(picoserve::response::File::javascript(include_str!(
-                    "./static/crypto-js-4.2.0.min.js"
-                ))),
+                get_service(picoserve::response::File::with_content_type_and_headers(
+                    "application/javascript; charset=utf-8",
+                    include_bytes_gz!("src/static/crypto-js-4.2.0.min.js"),
+                    &[("Content-Encoding", "gzip")],
+                )),
             )
             .route(
                 "/captive",
-                get_service(picoserve::response::File::html(self.captive_html)),
+                get_service(picoserve::response::File::with_content_type_and_headers(
+                    "text/html",
+                    self.captive_html_gz,
+                    &[("Content-Encoding", "gzip")],
+                )),
             );
         let router = router.route(
             "/captive/api/test-key",
@@ -257,23 +264,30 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> AppWithStateBuilder
         // Standard config parts //////////////////////////////////////////////////////////////////////////////////////
         let router = router.route(
             "/config",
-            get_service(picoserve::response::File::html(self.web_app_html)),
+            get_service(picoserve::response::File::with_content_type_and_headers(
+                "text/html",
+                self.web_app_html_gz,
+                &[("Content-Encoding", "gzip")],
+            )),
         ); // main config page
 
         let router = router
             .route(
                 // wasm (for encrypt/decrypt)
                 "/pkg/device_wasm_bg.wasm",
-                get_service(picoserve::response::File::with_content_type(
+                get_service(picoserve::response::File::with_content_type_and_headers(
                     "application/wasm",
-                    include_bytes!("./static/device_wasm_bg.wasm"),
+                    include_bytes_gz!("src/static/device_wasm_bg.wasm"),
+                    &[("Content-Encoding", "gzip")],
                 )),
             )
             .route(
                 "/pkg/device_wasm.js",
-                get_service(picoserve::response::File::javascript(include_str!(
-                    "./static/device_wasm.js"
-                ))),
+                get_service(picoserve::response::File::with_content_type_and_headers(
+                    "application/javascript; charset=utf-8",
+                    include_bytes_gz!("src/static/device_wasm.js"),
+                    &[("Content-Encoding", "gzip")],
+                )),
             );
 
         let framework_clone_post = framework.clone();
@@ -626,7 +640,7 @@ pub fn derive_key(key: &str, salt: &[u8], iterations: u32) -> Vec<u8> {
     key_bytes
 }
 
-pub(crate) fn encrypt(key_bytes: &[u8], data: &str) -> String {
+pub fn encrypt(key_bytes: &[u8], data: &str) -> String {
     // Derive key (32 bytes from a user-provided key)
 
     // let key_bytes = derive_key(key);

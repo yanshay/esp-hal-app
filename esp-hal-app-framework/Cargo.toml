@@ -1,6 +1,6 @@
 [package]
 name = "esp-hal-app-framework"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.84.0"
 description  = ""
@@ -70,7 +70,10 @@ futures-util = { version = "0.3.31", default-features = false }
 # Storage crates
 # embedded-sdmmc = { version = "0.8.0" }
 sequential-storage = { git = "https://github.com/tweedegolf/sequential-storage", features = [ "alloc", ], rev = "b6f7da77b7f3d66bc1ac36992a6a7b399b5ba030" }
-embedded-sdmmc = { git = "https://github.com/Be-ing/embedded-sdmmc-rs", rev = "835b2e4f9d3482b6287f674d7ecf6ae5d0618c18" }
+# embedded-sdmmc = { git = "https://github.com/Be-ing/embedded-sdmmc-rs", rev = "835b2e4f9d3482b6287f674d7ecf6ae5d0618c18" }
+embedded-sdmmc = { git = "https://github.com/yanshay/embedded-sdmmc-rs", branch = "yanshay_bisync" }
+# embedded-sdmmc = { path = "../../../../../OpenSourceProj/forked/embedded-sdmmc-rs" } 
+# embedded-sdmmc = { version = "0.8.0" }
 
 # Display & Touch crates
 display-interface = { version = "0.5.0" }
@@ -110,6 +113,7 @@ base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 getrandom = { version = "0.2.15", features = ["custom"] }
 semver = { version = "1.0.25", default-features = false }
 snafu = { git = "https://github.com/shepmaster/snafu", rev = "aedc9db8c04a437b4c547efd4d73e9337fa43a4a", default-features = false, features = ["rust_1_81", "alloc"]} # , "backtraces-impl-backtrace-crate"]} 
+framework_macros = { package = "esp-hal-app-framework-macros", path = "../esp-hal-app-framework-macros/" }
 
 # Security/Crypto crates
 aes-gcm = { version = "0.10" }  # AES-GCM encryption/decryption
