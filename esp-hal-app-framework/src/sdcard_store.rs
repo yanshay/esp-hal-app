@@ -365,13 +365,19 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         path: &str,
         offset: u32,
         bytes: &[u8],
+        only_if_new: bool,
     ) -> Result<(), SDCardStoreError<SPI>> {
         // TODO:    Not sure this is correct, think of the API, if we want this to create a new file
         let file_open_res = self
             .open_file(path, embedded_sdmmc::asynchronous::Mode::ReadWriteAppend)
             .await;
         let file = match file_open_res {
-            Ok(file) => file,
+            Ok(file) => {
+                if only_if_new {
+                    return Ok(());
+                }
+                file
+            }
             Err(_) => {
                 self.open_file(
                     path,
@@ -412,14 +418,12 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         path: &str,
         offset: u32,
         text: &str,
+        only_if_new: bool,
     ) -> Result<(), SDCardStoreError<SPI>> {
-        self.write_file_bytes(path, offset, text.as_bytes()).await
+        self.write_file_bytes(path, offset, text.as_bytes(), only_if_new).await
     }
 
-    pub async fn read_file_str(
-        &mut self,
-        path: &str,
-    ) -> Result<String, SDCardStoreError<SPI>> {
+    pub async fn read_file_str(&mut self, path: &str) -> Result<String, SDCardStoreError<SPI>> {
         let file_bin = self.read_file_bytes(path).await?;
         let file_str = String::from_utf8(file_bin).context(DecodeUTF8Snafu { full_path: path })?;
 
@@ -443,10 +447,7 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         }
     }
 
-    pub async fn read_create_str(
-        &mut self,
-        path: &str,
-    ) -> Result<String, SDCardStoreError<SPI>> {
+    pub async fn read_create_str(&mut self, path: &str) -> Result<String, SDCardStoreError<SPI>> {
         let v = self.read_create_bytes(path).await?;
         let s = String::from_utf8(v).context(DecodeUTF8Snafu { full_path: path })?;
         Ok(s)
