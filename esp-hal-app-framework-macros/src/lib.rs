@@ -73,9 +73,6 @@ pub fn include_bytes_gz(input: TokenStream) -> TokenStream {
     // Generate the byte array literal
     let bytes = compressed_data.iter().copied();
     
-    // Tell Cargo to recompile if the source file changes
-    println!("cargo:rerun-if-changed={}", full_path.display());
-    
     let expanded = quote! {
         &[#(#bytes),*]
     };
