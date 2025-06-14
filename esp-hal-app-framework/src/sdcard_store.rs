@@ -366,15 +366,17 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         offset: u32,
         bytes: &[u8],
         only_if_new: bool,
-    ) -> Result<(), SDCardStoreError<SPI>> {
+    ) -> Result<bool, SDCardStoreError<SPI>> { // bool -true if wrote, false if not (because file existed)
         // TODO:    Not sure this is correct, think of the API, if we want this to create a new file
         let file_open_res = self
             .open_file(path, embedded_sdmmc::asynchronous::Mode::ReadWriteAppend)
             .await;
+        let mut skip_write = false;
+
         let file = match file_open_res {
             Ok(file) => {
                 if only_if_new {
-                    return Ok(());
+                    skip_write = true; // don't just return here because need to close file
                 }
                 file
             }
@@ -389,20 +391,25 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
 
         let file = file.to_file(&self.volume_mgr);
 
-        let res: Result<(), SDCardStoreError<SPI>> = async {
-            file.seek_from_start(offset).context(SeekFileSnafu {
-                full_path: path,
-                offset,
-            })?;
-            file.write(bytes)
-                .await
-                .context(WriteFileSnafu { full_path: path })?;
-            file.flush()
-                .await
-                .context(WriteFileSnafu { full_path: path })?;
-            Ok(())
-        }
-        .await;
+        let res = if !skip_write {
+            let res: Result<bool, SDCardStoreError<SPI>> = async {
+                file.seek_from_start(offset).context(SeekFileSnafu {
+                    full_path: path,
+                    offset,
+                })?;
+                file.write(bytes)
+                    .await
+                    .context(WriteFileSnafu { full_path: path })?;
+                file.flush()
+                    .await
+                    .context(WriteFileSnafu { full_path: path })?;
+                Ok(true)
+            }
+            .await;
+            res
+        } else {
+            Ok(false)
+        };
 
         // async finally block
         file.close().await.context(CloseSnafu {
@@ -419,8 +426,9 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         offset: u32,
         text: &str,
         only_if_new: bool,
-    ) -> Result<(), SDCardStoreError<SPI>> {
-        self.write_file_bytes(path, offset, text.as_bytes(), only_if_new).await
+    ) -> Result<bool, SDCardStoreError<SPI>> {
+        self.write_file_bytes(path, offset, text.as_bytes(), only_if_new)
+            .await
     }
 
     pub async fn read_file_str(&mut self, path: &str) -> Result<String, SDCardStoreError<SPI>> {
