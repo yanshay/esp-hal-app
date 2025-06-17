@@ -29,16 +29,16 @@ use super::{
 // Specific Web Application Runner for the Config App which is part of the Framework
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-pub struct WebAppRunner<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder + 'static> {
+pub struct WebAppRunner<MoreState: 'static, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState> + 'static> {
     framework: Rc<RefCell<Framework>>,
-    generic_runner: GenericRunner<WebAppBuilder<NestedMainAppBuilder>, WebAppState>,
+    generic_runner: GenericRunner<WebAppBuilder<MoreState, NestedMainAppBuilder>, WebAppState<MoreState>>,
 }
 
-impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> WebAppRunner<NestedMainAppBuilder> {
+impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>> WebAppRunner<MoreState, NestedMainAppBuilder> {
     pub fn new(
         framework: Rc<RefCell<Framework>>,
-        app_router: &'static AppRouter<WebAppBuilder<NestedMainAppBuilder>>,
-        app_state: &'static WebAppState,
+        app_router: &'static AppRouter<WebAppBuilder<MoreState, NestedMainAppBuilder>>,
+        app_state: &'static WebAppState<MoreState>,
         config: Config<Duration>,
     ) -> Self {
         let web_server_config = WebServerConfig {
@@ -48,7 +48,7 @@ impl<NestedMainAppBuilder: NestedAppWithWebAppStateBuilder> WebAppRunner<NestedM
             tls_certificate: framework.borrow().settings.web_server_tls_certificate,
             tls_private_key: framework.borrow().settings.web_server_tls_private_key,
         };
-        let generic_runner = GenericRunner::<WebAppBuilder<NestedMainAppBuilder>, WebAppState>::new(
+        let generic_runner = GenericRunner::<WebAppBuilder<MoreState, NestedMainAppBuilder>, WebAppState<MoreState>>::new(
             framework.clone(),
             web_server_config,
             app_router,
