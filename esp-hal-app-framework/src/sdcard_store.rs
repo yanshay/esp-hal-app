@@ -28,6 +28,13 @@ where
         #[snafu(source(from(embedded_sdmmc::asynchronous::Error<E>, DebugWrap)))]
         source: DebugWrap<embedded_sdmmc::asynchronous::Error<E>>,
     },
+    #[snafu(display("Failed to delete file/dir \'{full_path}\' part \'{part}\' : {source}"))]
+    Delete {
+        full_path: String,
+        part: String,
+        #[snafu(source(from(embedded_sdmmc::asynchronous::Error<E>, DebugWrap)))]
+        source: DebugWrap<embedded_sdmmc::asynchronous::Error<E>>,
+    },
     #[snafu(display("Failed to create directory \'{full_path}\' part \'{part}\' : {source}"))]
     MakeDir {
         full_path: String,
@@ -366,7 +373,8 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         offset: u32,
         bytes: &[u8],
         only_if_new: bool,
-    ) -> Result<bool, SDCardStoreError<SPI>> { // bool -true if wrote, false if not (because file existed)
+    ) -> Result<bool, SDCardStoreError<SPI>> {
+        // bool -true if wrote, false if not (because file existed)
         // TODO:    Not sure this is correct, think of the API, if we want this to create a new file
         let file_open_res = self
             .open_file(path, embedded_sdmmc::asynchronous::Mode::ReadWriteAppend)
@@ -459,6 +467,55 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         let v = self.read_create_bytes(path).await?;
         let s = String::from_utf8(v).context(DecodeUTF8Snafu { full_path: path })?;
         Ok(s)
+    }
+
+    pub async fn delete_file(&mut self, path: &str) -> Result<(), SDCardStoreError<SPI>> {
+        let volume0 = self.take_volume().await?.to_volume(&self.volume_mgr);
+
+        let res: Result<(), SDCardStoreError<SPI>> = async {
+            let mut dir = volume0.open_root_dir().context(OpenSnafu {
+                full_path: path.to_string(),
+                part: "/",
+            })?;
+            let mut last_path_part = "";
+
+            let res: Result<(), SDCardStoreError<SPI>> = async {
+                let path_parts: Vec<&str> = path.split(['/', '\\']).collect();
+                for (path_idx, path_part) in path_parts.iter().enumerate() {
+                    last_path_part = path_part;
+                    if path_idx == path_parts.len() - 1 {
+                        break;
+                    };
+                    if path_part.is_empty() {
+                        continue;
+                    };
+                    dir.change_dir(*path_part).await.context(OpenSnafu {
+                        full_path: path.to_string(),
+                        part: path_part.to_string(),
+                    })?;
+                }
+                dir.delete_file_in_dir(path_parts[path_parts.len() - 1])
+                    .await
+                    .context(DeleteSnafu {
+                        full_path: path.to_string(),
+                        part: path_parts[path_parts.len() - 1].to_string(),
+                    })?;
+                Ok(())
+            }
+            .await;
+
+            dir.close().context(CloseSnafu {
+                full_path: path.to_string(),
+                part: last_path_part,
+            })?;
+
+            res
+        }
+        .await;
+
+        self.return_volume(volume0.to_raw_volume());
+
+        res
     }
 
     pub async fn create_file(&mut self, path: &str) -> Result<(), SDCardStoreError<SPI>> {
