@@ -1,6 +1,6 @@
 [package]
 name = "esp-hal-app-framework"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version = "1.84.0"
 description  = ""
@@ -93,6 +93,7 @@ edge-http = "0.5.0"
 edge-mdns = "0.5.0"
 # picoserve = {version = "0.14.1", git = "https://github.com/sammhicks/picoserve", rev = "5d40ea410efa4c2e313cfaa19f62f844ece1fd55", features = ["alloc", "embassy"] }
 picoserve = {version = "0.15.1", features = ["alloc", "embassy"] }
+sntpc = { version = "0.5.2", default-features = false, features = ["embassy-socket"]}
 
 
 # Utility crates
@@ -113,6 +114,8 @@ base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 getrandom = { version = "0.2.15", features = ["custom"] }
 semver = { version = "1.0.25", default-features = false }
 snafu = { git = "https://github.com/shepmaster/snafu", rev = "aedc9db8c04a437b4c547efd4d73e9337fa43a4a", default-features = false, features = ["rust_1_81", "alloc"]} # , "backtraces-impl-backtrace-crate"]} 
+chrono = { version = "0.4.41", default-features = false }
+
 framework_macros = { package = "esp-hal-app-framework-macros", path = "../esp-hal-app-framework-macros/" }
 
 # Security/Crypto crates

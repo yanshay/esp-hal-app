@@ -28,7 +28,7 @@ use super::{
     flash_map::FlashMap, framework_web_app::derive_key, ota::ota_task, terminal::Terminal,
 };
 use crate::{
-    ota::OtaRequest, sdcard_store::SDCardStore, web_server::WebServerCommand, wifi::mdns_task,
+    mdns::mdns_task, ntp::ntp_task, ota::OtaRequest, sdcard_store::SDCardStore, web_server::WebServerCommand
 };
 use crate::settings::{FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES};
 
@@ -123,6 +123,7 @@ pub struct FrameworkSettings {
 
     pub default_fixed_security_key: Option<String>,
     pub mdns: bool,
+    pub ntp: bool,
 }
 
 pub type WebServerCommands =
@@ -383,6 +384,12 @@ impl Framework {
             } else {
                 warn!("mDNS not activated - device name not configured");
             }
+        }
+
+        if self.settings.ntp {
+                self.spawner
+                    .spawn(ntp_task(self.framework.as_ref().unwrap().clone()))
+                    .ok();
         }
 
         Ok(())

@@ -31,6 +31,8 @@ pub mod wifi;
 #[macro_use]
 pub mod utils;
 pub mod settings;
+pub mod ntp;
+pub mod mdns;
 
 extern crate alloc;
 
