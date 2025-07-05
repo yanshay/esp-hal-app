@@ -654,7 +654,7 @@ pub fn derive_key(key: &str, salt: &[u8], iterations: u32) -> Vec<u8> {
     key_bytes
 }
 
-pub fn encrypt(key_bytes: &[u8], data: &str) -> String {
+pub fn encrypt_bytes(key_bytes: &[u8], data: &[u8]) -> String {
     // Derive key (32 bytes from a user-provided key)
 
     // let key_bytes = derive_key(key);
@@ -669,7 +669,7 @@ pub fn encrypt(key_bytes: &[u8], data: &str) -> String {
 
     // Encrypt the data
     let ciphertext = cipher
-        .encrypt(iv, Payload::from(data.as_bytes()))
+        .encrypt(iv, Payload::from(data))
         .expect("Encryption here should not fail"); // only memory issue?
     let res = format!(
         "{}{}",
@@ -678,6 +678,11 @@ pub fn encrypt(key_bytes: &[u8], data: &str) -> String {
     );
 
     res
+
+}
+
+pub fn encrypt(key_bytes: &[u8], data: &str) -> String {
+    encrypt_bytes(key_bytes, data.as_bytes())
 }
 
 pub fn decrypt(key_bytes: &[u8], encrypted: &[u8]) -> Result<String, String> {
