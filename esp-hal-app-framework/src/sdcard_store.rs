@@ -2,14 +2,18 @@ use alloc::{
     string::{FromUtf8Error, String, ToString},
     vec::Vec,
 };
+use chrono::{Datelike, Timelike};
+use embassy_time::Instant;
 use embedded_hal_async::spi::SpiDevice;
 use embedded_sdmmc::asynchronous::{
-    sdcard::AcquireOpts, BlockDevice, RawFile, RawVolume, SdCard, VolumeManager,
+    sdcard::AcquireOpts, BlockDevice, RawDirectory, RawFile, RawVolume, SdCard, VolumeManager,
 };
 
 use snafu::{prelude::*, IntoError};
 
-use crate::utils::DebugWrap;
+use crate::{ntp::InstantExt, utils::DebugWrap};
+
+pub use embedded_sdmmc::asynchronous::Mode;
 
 #[derive(Snafu, Debug)]
 pub enum Error<E>
@@ -86,13 +90,24 @@ pub struct Clock;
 
 impl embedded_sdmmc::asynchronous::TimeSource for Clock {
     fn get_timestamp(&self) -> embedded_sdmmc::asynchronous::Timestamp {
-        embedded_sdmmc::asynchronous::Timestamp {
-            year_since_1970: 30_u8,
-            zero_indexed_month: 0,
-            zero_indexed_day: 0,
-            hours: 0,
-            minutes: 0,
-            seconds: 0,
+        if let Some(datetime) = Instant::now().to_date_time() {
+            embedded_sdmmc::asynchronous::Timestamp {
+                year_since_1970: (datetime.year()-1970) as u8,
+                zero_indexed_month: datetime.month0() as u8,
+                zero_indexed_day: datetime.day0() as u8,
+                hours: datetime.hour() as u8,
+                minutes: datetime.minute() as u8,
+                seconds: datetime.second() as u8,
+            }
+        } else {
+            embedded_sdmmc::asynchronous::Timestamp {
+                year_since_1970: 30_u8,
+                zero_indexed_month: 0,
+                zero_indexed_day: 0,
+                hours: 0,
+                minutes: 0,
+                seconds: 0,
+            }
         }
     }
 }
@@ -177,7 +192,74 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
     fn return_volume(&mut self, raw_volume: RawVolume) {
         self.raw_volume = Some(raw_volume);
     }
+    pub fn volume_mgr(
+        &self,
+    ) -> &VolumeManager<SdCard<SPI, embassy_time::Delay>, Clock, MAX_DIRS, MAX_FILES, 1> {
+        &self.volume_mgr
+    }
 
+    pub async fn close_dir(&mut self, dir: RawDirectory) -> Result<(), SDCardStoreError<SPI>> {
+        let dir = dir.to_directory(&self.volume_mgr);
+
+        dir.close().context(CloseSnafu {
+            full_path: "<unknown folder close path>",
+            part: "",
+        })
+    }
+
+    pub async fn open_dir(
+        &mut self,
+        path: &str,
+        mode: embedded_sdmmc::asynchronous::Mode,
+    ) -> Result<RawDirectory, SDCardStoreError<SPI>> {
+        let volume0 = self.take_volume().await?.to_volume(&self.volume_mgr);
+
+        let res: Result<RawDirectory, SDCardStoreError<SPI>> = async {
+            let mut dir = volume0.open_root_dir().context(OpenSnafu {
+                full_path: path.to_string(),
+                part: "/",
+            })?;
+
+            let res: Result<RawDirectory, SDCardStoreError<SPI>> = async {
+                let path_parts: Vec<&str> = path.split(['/', '\\']).collect();
+                for path_part in path_parts.iter() {
+                    if path_part.is_empty() {
+                        continue;
+                    };
+                    let res = dir.change_dir(*path_part).await;
+                    if let Err(e) = res {
+                        if CREATE_MODES.contains(&mode) {
+                            dir.make_dir_in_dir(*path_part)
+                                .await
+                                .context(MakeDirSnafu {
+                                    full_path: path.to_string(),
+                                    part: path_part.to_string(),
+                                })?;
+                            dir.change_dir(*path_part).await.context(OpenSnafu {
+                                full_path: path.to_string(),
+                                part: path_part.to_string(),
+                            })?;
+                        } else {
+                            return Err(ChangeDirSnafu {
+                                full_path: path.to_string(),
+                                part: path_part.to_string(),
+                            }
+                            .into_error(e));
+                        }
+                    }
+                }
+                Ok(dir.to_raw_directory())
+            }
+            .await;
+
+            res
+        }
+        .await;
+
+        self.return_volume(volume0.to_raw_volume());
+
+        res
+    }
     async fn open_file(
         &mut self,
         path: &str,
