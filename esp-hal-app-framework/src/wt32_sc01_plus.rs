@@ -669,7 +669,9 @@ where
             ft6x36::Dimension((height - 1) as u16, (width - 1) as u16),
         );
         touch_inner.set_orientation(ft6x36orientation);
-        touch_inner.init().unwrap();
+        if touch_inner.init().is_err() {
+            panic!("Failed to initialize touch. Did you flash the correct device? (WT32-SC01 Plus)");
+        }
 
         // Turn on display backlight
         channel0
