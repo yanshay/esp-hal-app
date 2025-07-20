@@ -609,10 +609,14 @@ impl Framework {
     }
 
     // Web App
-    pub fn start_web_app(&mut self, stack: Stack<'static>, mode: WebConfigMode) {
+    pub fn derive_encryption_key(&self, security_key: &str) -> Vec<u8> {
         let salt: &[u8] = self.settings.web_app_salt.as_bytes();
         let iterations = self.settings.web_app_key_derivation_iterations;
 
+        derive_key(security_key, salt, iterations)
+    }
+
+    pub fn start_web_app(&mut self, stack: Stack<'static>, mode: WebConfigMode) {
         let mut buf_vec = alloc::vec![0; self.settings.web_app_security_key_length];
         let buf = buf_vec.as_mut_slice();
 
@@ -639,7 +643,7 @@ impl Framework {
         }
         self.web_config_key = key_to_use.to_string();
         self.encryption_key
-            .replace(derive_key(key_to_use, salt, iterations));
+            .replace(self.derive_encryption_key(key_to_use));
         self.web_server_commands
             .publisher()
             .unwrap()
