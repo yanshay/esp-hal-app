@@ -25,7 +25,27 @@ use super::{
 
 #[embassy_executor::task]
 #[allow(clippy::too_many_arguments)]
-pub async fn connection(
+pub async fn connection_task(
+    controller: esp_wifi::wifi::WifiController<'static>,
+    sta_stack: Stack<'static>,
+    ap_stack: Stack<'static>,
+    #[cfg(feature = "improv-jtag-serial")] rx: esp_hal::usb_serial_jtag::UsbSerialJtagRx<
+        'static,
+        esp_hal::Async,
+    >,
+    #[cfg(feature = "improv-jtag-serial")] tx: esp_hal::usb_serial_jtag::UsbSerialJtagTx<
+        'static,
+        esp_hal::Async,
+    >,
+    #[cfg(feature = "improv-uart")] mut rx: esp_hal::uart::UartRx<'static, esp_hal::Async>,
+    #[cfg(feature = "improv-uart")] mut tx: esp_hal::uart::UartTx<'static, esp_hal::Async>,
+    framework: Rc<RefCell<Framework>>,
+) {
+    connection_task_inner(controller, sta_stack, ap_stack, rx, tx, framework).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn connection_task_inner(
     mut controller: esp_wifi::wifi::WifiController<'static>,
     sta_stack: Stack<'static>,
     ap_stack: Stack<'static>,
