@@ -2043,7 +2043,7 @@ dependencies = [
 [[package]]
 name = "esp-mbedtls"
 version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-mbedtls.git?rev=1806f8f622b08a9b54de91814eea13c6b3d9ff1c#1806f8f622b08a9b54de91814eea13c6b3d9ff1c"
+source = "git+https://github.com/yanshay/esp-mbedtls.git?branch=yanshay_reuse_session_esp-hal-0.23.1#465848baac9cb5adceb7ab633d634efe1f674848"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -2062,7 +2062,7 @@ dependencies = [
 [[package]]
 name = "esp-mbedtls-sys"
 version = "0.1.0"
-source = "git+https://github.com/esp-rs/esp-mbedtls.git?rev=1806f8f622b08a9b54de91814eea13c6b3d9ff1c#1806f8f622b08a9b54de91814eea13c6b3d9ff1c"
+source = "git+https://github.com/yanshay/esp-mbedtls.git?branch=yanshay_reuse_session_esp-hal-0.23.1#465848baac9cb5adceb7ab633d634efe1f674848"
 dependencies = [
  "anyhow",
  "bindgen",

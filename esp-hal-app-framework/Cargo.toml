@@ -42,7 +42,8 @@ esp-println = { version = "0.13.0", default-features = false, features = ["criti
 esp-hal-embassy = { version = "0.6.0" }
 esp-partition-table = { version = "0.1.2" }
 esp-wifi = { version = "0.12.0", features = [ "wifi", "utils", "esp-alloc"] }
-esp-mbedtls = { git = "https://github.com/esp-rs/esp-mbedtls.git", features = [ "async" ], rev = "1806f8f622b08a9b54de91814eea13c6b3d9ff1c" }
+# esp-mbedtls = { git = "https://github.com/esp-rs/esp-mbedtls.git", features = [ "async" ], rev = "1806f8f622b08a9b54de91814eea13c6b3d9ff1c" }
+esp-mbedtls = { git = "https://github.com/yanshay/esp-mbedtls.git", features = [ "async", "esp32s3" ], branch = "yanshay_reuse_session_esp-hal-0.23.1" }
 esp-alloc = { version = "0.6.0" }
 esp-storage = { version = "0.4.0", features = [ "nor-flash" ] }
 
