@@ -61,6 +61,7 @@ pub async fn ntp_task(framework: Rc<RefCell<Framework>>) {
 
     let mut resolved = false;
     let mut ntp_address = None;
+    term_info!("Requesting to get NTP Time");
     'global_loop: for ntp_server in NTP_SERVERS.iter().cycle() {
         for trial in 0..2 {
             let ntp_addrs = match stack.dns_query(ntp_server, DnsQueryType::A).await {
@@ -78,7 +79,7 @@ pub async fn ntp_task(framework: Rc<RefCell<Framework>>) {
             } else {
                 resolved = true;
                 ntp_address = Some(ntp_addrs[0]);
-                info!("Using NTP server {ntp_server} at address: {}", ntp_addrs[0]);
+                term_info!("Using NTP server {ntp_server} at address: {}", ntp_addrs[0]);
                 break;
             }
         }
@@ -108,8 +109,8 @@ pub async fn ntp_task(framework: Rc<RefCell<Framework>>) {
                 &mut *tx_buffer,
             );
             socket.bind(123).unwrap();
-
-            for _trial in 0..10 {
+            let trials = 10;
+            for trial in 0..trials {
                 info!("Issuing NTP query to {addr}");
                 match get_time(SocketAddr::from((addr, 123)), &socket, context).await {
                     Ok(time) => {
@@ -121,10 +122,12 @@ pub async fn ntp_task(framework: Rc<RefCell<Framework>>) {
                         let offset_duration_micros = Duration::from_micros(offset_micros);
                         set_time_offset(offset_duration_micros);
 
-                        info!(
+                        debug!(
                             "NTP Time: {time:?} -> {}",
                             DateTime::from_timestamp(time.sec() as i64, 0).unwrap()
                         );
+
+                        term_info!("Received NTP Time : {}", DateTime::from_timestamp(time.sec() as i64, 0).unwrap());
                         // info!("Complete NTP information: {:?}", time);
                         // Timer::after_secs(10).await;
                         // info!(">>>> After 5 seconds time is {:?}", Instant::now().to_date_time());
@@ -132,6 +135,9 @@ pub async fn ntp_task(framework: Rc<RefCell<Framework>>) {
                     }
                     Err(err) => {
                         error!("NTP error: {err:?}");
+                        if trial == trials-1 {
+                            term_error!("Failed to receive NTP time, retrying another server");
+                        }
                         Timer::after_secs(1).await; // and continue the loop
                     }
                 }
