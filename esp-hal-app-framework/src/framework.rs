@@ -27,10 +27,14 @@ use serde::Serialize;
 use super::{
     flash_map::FlashMap, framework_web_app::derive_key, ota::ota_task, terminal::Terminal,
 };
-use crate::{
-    mdns::mdns_task, ntp::ntp_task, ota::OtaRequest, sdcard_store::SDCardStore, web_server::WebServerCommand
-};
 use crate::settings::{FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES};
+use crate::{
+    mdns::mdns_task, ntp::ntp_task, ota::OtaRequest, sdcard_store::SDCardStore,
+    web_server::WebServerCommand,
+};
+
+pub type SDCardStoreType =
+    SDCardStore<ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>, FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES>;
 
 const WIFI_CONFIG_KEY: &str = "__wifi__";
 const FIXED_KEY_CONFIG_KEY: &str = "__fixed_key__";
@@ -387,9 +391,9 @@ impl Framework {
         }
 
         if self.settings.ntp {
-                self.spawner
-                    .spawn(ntp_task(self.framework.as_ref().unwrap().clone()))
-                    .ok();
+            self.spawner
+                .spawn(ntp_task(self.framework.as_ref().unwrap().clone()))
+                .ok();
         }
 
         Ok(())
@@ -404,10 +408,12 @@ impl Framework {
             embedded_hal_bus::spi::NoDelay,
         >,
     ) {
-
-        let file_store = SDCardStore::<_, FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES>::new(sdcard_device).await;
         let file_store =
-            Rc::new(Mutex::<CriticalSectionRawMutex, SDCardStore<_, 20, 5>>::new(file_store));
+            SDCardStore::<_, FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES>::new(sdcard_device).await;
+        let file_store = Rc::new(Mutex::<
+            CriticalSectionRawMutex,
+            SDCardStore<_, FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES>,
+        >::new(file_store));
         framework.borrow_mut().inner_file_store = Some(file_store);
     }
 

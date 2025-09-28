@@ -3,10 +3,11 @@ use alloc::{
     vec::Vec,
 };
 use chrono::{Datelike, Timelike};
-use embassy_time::Instant;
+use embassy_time::{Instant, Timer};
 use embedded_hal_async::spi::SpiDevice;
 use embedded_sdmmc::asynchronous::{
-    sdcard::AcquireOpts, BlockDevice, RawDirectory, RawFile, RawVolume, SdCard, VolumeManager,
+    sdcard::AcquireOpts, BlockDevice, RawDirectory, RawFile, RawVolume, SdCard,
+    VolumeManager,
 };
 
 use snafu::{prelude::*, IntoError};
@@ -92,7 +93,7 @@ impl embedded_sdmmc::asynchronous::TimeSource for Clock {
     fn get_timestamp(&self) -> embedded_sdmmc::asynchronous::Timestamp {
         if let Some(datetime) = Instant::now().to_date_time() {
             embedded_sdmmc::asynchronous::Timestamp {
-                year_since_1970: (datetime.year()-1970) as u8,
+                year_since_1970: (datetime.year() - 1970) as u8,
                 zero_indexed_month: datetime.month0() as u8,
                 zero_indexed_day: datetime.day0() as u8,
                 hours: datetime.hour() as u8,
@@ -160,6 +161,7 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
             } else {
                 volume = None;
             };
+            Timer::after_millis(10).await;
         }
 
         Self {
@@ -175,7 +177,7 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         Ok(())
     }
 
-    async fn take_volume(&mut self) -> Result<RawVolume, SDCardStoreError<SPI>> {
+    pub async fn take_volume(&mut self) -> Result<RawVolume, SDCardStoreError<SPI>> {
         if let Some(raw_volume) = self.raw_volume.take() {
             self.card_installed = true;
             return Ok(raw_volume);
@@ -189,7 +191,7 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         Ok(raw_volume)
     }
 
-    fn return_volume(&mut self, raw_volume: RawVolume) {
+    pub fn return_volume(&mut self, raw_volume: RawVolume) {
         self.raw_volume = Some(raw_volume);
     }
     pub fn volume_mgr(
@@ -330,6 +332,50 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         self.return_volume(volume0.to_raw_volume());
 
         res
+    }
+
+    pub async fn file_exists(
+        &mut self,
+        path: &str,
+    ) -> Result<bool, SDCardStoreError<SPI>> {
+        match self.open_file(path, Mode::ReadOnly).await {
+            Ok(file) => {
+                let file = file.to_file(self.volume_mgr());
+                file.close().await.context(CloseSnafu {
+                    full_path: path.to_string(),
+                    part: String::new(),
+                })?;
+                Ok(true)
+            }
+            Err(err) => {
+                match err {
+                    Error::OpenVolume { source } => Err(Error::OpenVolume { source }),
+                    _ => Ok(false)
+                }
+            }
+        }
+    }
+
+    pub async fn dir_exists(
+        &mut self,
+        path: &str,
+    ) -> Result<bool, SDCardStoreError<SPI>> {
+        match self.open_dir(path, Mode::ReadOnly).await {
+            Ok(dir) => {
+                let dir = dir.to_directory(self.volume_mgr());
+                dir.close().context(CloseSnafu {
+                    full_path: path.to_string(),
+                    part: String::new(),
+                })?;
+                Ok(true)
+            }
+            Err(err) => {
+                match err {
+                    Error::OpenVolume { source } => Err(Error::OpenVolume { source }),
+                    _ => Ok(false)
+                }
+            }
+        }
     }
 
     pub async fn inner_read_file_bytes(

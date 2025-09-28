@@ -353,10 +353,6 @@ pub async fn ota_task(
             sec_since_start = start_time.elapsed().as_secs();
             if sec_since_start >= reported_on_sec_since_start {
                 let progress_percent = ota.get_ota_progress() * 100.0;
-                debug!(
-                    "Progress: {x}: {sec_since_start} secs, {bytes_read} {bytes_read} {:.0}%",
-                    progress_percent
-                );
                 report(
                     Report::Status,
                     &format!(

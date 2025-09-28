@@ -46,11 +46,11 @@ impl Terminal {
     pub fn notify_add_text(&self, text: &str) {
         for weak_observer in self.observers.iter() {
             let observer = weak_observer.upgrade().unwrap();
-            observer.borrow().on_add_text(text);
+            observer.borrow_mut().on_add_text(text);
         }
     }
 }
 
 pub trait TerminalObserver {
-    fn on_add_text(&self, text: &str);
+    fn on_add_text(&mut self, text: &str);
 }

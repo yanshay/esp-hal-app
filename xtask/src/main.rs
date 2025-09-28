@@ -227,7 +227,7 @@ fn handle_ota(command: &OtaAndFlasherCommand) -> Result<(), String> {
         return Err("At least one command (build or deploy) must be specified".to_string());
     }
 
-    let package_folder_path = command.input.canonicalize().map_err(|e| format!("Error in input path {e}"))?;
+    let package_folder_path = command.input.canonicalize().map_err(|e| format!("Error in input path '{}' {e}", command.input.display()))?;
     let (package_name, version) = get_package_info(&package_folder_path)?;
 
     if let Some(Build::Build) = command.build {
