@@ -377,9 +377,14 @@ pub async fn connection_task_inner(
     term_info!("About to connect to WiFi SSID '{}'", ssid);
     // trace!("About to connect Wifi using '{}', '{}'", password, ssid);
 
-    let first_connect = true;
+    let mut first_connect = true;
+    let mut is_connected = false;
     loop {
         #[allow(clippy::single_match)]
+        // TODO: Things are not working here as it should and code is also (in addition) incorrect.
+        //       wifi_state() is always Invalid.
+        //       and this loop is always 'stuck' in the connect_async() when connected.
+        //       https://github.com/esp-rs/esp-hal/discussions/4261
         match esp_wifi::wifi::wifi_state() {
             esp_wifi::wifi::WifiState::StaConnected => {
                 // wait until we're no longer connected
@@ -399,9 +404,9 @@ pub async fn connection_task_inner(
                 }
             }
             _ => {
-                if !first_connect {
-                    term_error!("WiFi disconnected, reconnecting...");
-                }
+                // if !first_connect {
+                //     term_error!("WiFi disconnected, reconnecting...");
+                // }
             }
         }
 
@@ -472,6 +477,8 @@ pub async fn connection_task_inner(
                             }
                         }
                         framework.borrow().notify_wifi_sta_connected();
+                        first_connect = false;
+                        is_connected = true;
                         break;
                     } else {
                         if wait_counter >= SKIP_CHECKS {
@@ -487,6 +494,11 @@ pub async fn connection_task_inner(
                 }
             }
             Err(e) => {
+                if is_connected && !first_connect {
+                    framework.borrow_mut().report_wifi(None, false, &ssid);
+                    framework.borrow().notify_wifi_sta_disconnected();
+                }
+                is_connected = false;
                 term_error!("Error while trying to connect to wifi: {:?}", e);
                 Timer::after(Duration::from_millis(1000)).await
             }

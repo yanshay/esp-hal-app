@@ -770,6 +770,12 @@ impl Framework {
             observer.borrow_mut().on_wifi_sta_connected();
         }
     }
+    pub fn notify_wifi_sta_disconnected(&self) {
+        for weak_observer in self.observers.iter() {
+            let observer = weak_observer.upgrade().unwrap();
+            observer.borrow_mut().on_wifi_sta_disconnected();
+        }
+    }
     pub fn notify_initialization_completed(&self, status: bool) {
         debug!(
             "Notified on Initialization Completed {}",
@@ -801,6 +807,7 @@ pub trait FrameworkObserver {
     fn on_web_config_started(&self, key: &str, mode: WebConfigMode);
     fn on_web_config_stopped(&self);
     fn on_wifi_sta_connected(&self);
+    fn on_wifi_sta_disconnected(&self);
 }
 
 #[embassy_executor::task]
