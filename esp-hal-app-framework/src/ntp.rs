@@ -146,6 +146,7 @@ pub async fn ntp_task(framework: Rc<RefCell<Framework>>) {
             // Need to change to something that can be modified many time
         }
     }
+    info!("ntp_task Exited");
 }
 
 pub static mut TIME_OFFSET: once_cell::sync::OnceCell<Duration> = once_cell::sync::OnceCell::new();

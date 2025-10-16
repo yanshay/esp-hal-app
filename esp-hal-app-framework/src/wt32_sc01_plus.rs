@@ -153,7 +153,7 @@ pub async fn event_loop<I2C: embedded_hal::i2c::I2c>(
                 last_touch_time = embassy_time::Instant::now();
                 slint::platform::update_timers_and_animations();
                 if display_partially_dimmed || display_fully_dimmed {
-                    trace!("Undim display");
+                    trace!("Undimming the display");
                     channel0
                         .configure(esp_hal::ledc::channel::config::Config {
                             timer: lstimer0,
@@ -223,14 +223,14 @@ pub async fn event_loop<I2C: embedded_hal::i2c::I2c>(
                         })
                         .unwrap();
                     if !display_fully_dimmed {
-                        info!("Darkening display")
+                        info!("Blanking the display")
                     }
                     display_fully_dimmed = true;
                     ignore_touch = true;
                 } else if !display_partially_dimmed
                     && last_touch_time.elapsed().as_secs() > framework.display_dimming_timeout
                 {
-                    trace!("Darken display");
+                    trace!("Dimming the display");
                     channel0
                         .configure(esp_hal::ledc::channel::config::Config {
                             timer: lstimer0,
