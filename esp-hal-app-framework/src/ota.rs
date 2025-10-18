@@ -3,7 +3,7 @@ use core::net::SocketAddr;
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::{ffi::CString, format};
 use edge_http::io::client::Connection;
 use edge_nal_embassy::{Tcp, TcpBuffers};
@@ -80,10 +80,10 @@ impl OtaObserver for FrameworkOtaObserver {
 #[allow(clippy::too_many_arguments)]
 #[embassy_executor::task]
 pub async fn ota_task(
-    ota_domain: &'static str,
-    ota_path: &'static str,
-    ota_toml_filename: &'static str,
-    cert: &'static str,
+    ota_domain: String,
+    ota_path: String,
+    ota_toml_filename: String,
+    cert: String,
     ota_request: OtaRequest,
     framework: Rc<RefCell<Framework>>,
 ) {
@@ -98,11 +98,11 @@ pub async fn ota_task(
         .app_cargo_pkg_version
         .to_string();
     run_ota(
-        ota_domain,
-        ota_path,
-        ota_toml_filename,
+        &ota_domain,
+        &ota_path,
+        &ota_toml_filename,
         &curr_ver,
-        cert,
+        &cert,
         ota_request,
         framework,
         &mut framework_observer,
@@ -112,11 +112,11 @@ pub async fn ota_task(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run_ota(
-    ota_domain: &'static str,
-    ota_path: &'static str,
-    ota_toml_filename: &'static str,
+    ota_domain: &str,
+    ota_path: &str,
+    ota_toml_filename: &str,
     cur_version: &str,
-    cert: &'static str,
+    cert: &str,
     ota_request: OtaRequest,
     framework: Rc<RefCell<Framework>>,
     observer: &mut dyn OtaObserver,
@@ -298,9 +298,7 @@ pub async fn run_ota(
     };
 
     let newer = {
-        if let Ok(mut curr_req) =
-            VersionReq::parse(cur_version)
-        {
+        if let Ok(mut curr_req) = VersionReq::parse(cur_version) {
             curr_req.comparators[0].op = semver::Op::Greater;
             curr_req.matches(&new_semver)
         } else {
@@ -401,7 +399,7 @@ pub async fn run_ota(
 
             match res {
                 Ok(true) => {
-//                     let res = ota.ota_flush(false, true);
+                    let res = ota.ota_flush(false, true);
                     sec_since_start = start_time.elapsed().as_secs();
                     debug!(
                         "Finished: {x}: {sec_since_start} secs, {bytes_read} {bytes_read} {:.0}%",

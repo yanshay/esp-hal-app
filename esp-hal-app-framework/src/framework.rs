@@ -602,10 +602,10 @@ impl Framework {
         }
         self.spawner
             .spawn(ota_task(
-                self.settings.ota_domain,
-                self.settings.ota_path,
-                self.settings.ota_toml_filename,
-                self.settings.ota_certs,
+                self.settings.ota_domain.to_string(),
+                self.settings.ota_path.to_string(),
+                self.settings.ota_toml_filename.to_string(),
+                self.settings.ota_certs.to_string(),
                 ota_request,
                 self.framework.as_ref().unwrap().clone(),
             ))
