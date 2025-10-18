@@ -606,8 +606,6 @@ impl Framework {
                 self.settings.ota_path,
                 self.settings.ota_toml_filename,
                 self.settings.ota_certs,
-                self.stack,
-                self.tls,
                 ota_request,
                 self.framework.as_ref().unwrap().clone(),
             ))
@@ -799,11 +797,11 @@ impl Framework {
 pub trait FrameworkObserver {
     fn on_webapp_url_update(&self, ip_url: &str, name_url: Option<&str>, ssid: &str);
     fn on_initialization_completed(&self, status: bool);
-    fn on_ota_version_available(&self, version: &str, newer: bool);
-    fn on_ota_start(&self);
-    fn on_ota_status(&self, text: &str);
-    fn on_ota_failed(&self, text: &str);
-    fn on_ota_completed(&self, text: &str);
+    fn on_ota_version_available(&mut self, version: &str, newer: bool);
+    fn on_ota_start(&mut self);
+    fn on_ota_status(&mut self, text: &str);
+    fn on_ota_failed(&mut self, text: &str);
+    fn on_ota_completed(&mut self, text: &str);
     fn on_web_config_started(&self, key: &str, mode: WebConfigMode);
     fn on_web_config_stopped(&self);
     fn on_wifi_sta_connected(&self);

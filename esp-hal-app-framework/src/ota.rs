@@ -3,31 +3,78 @@ use core::net::SocketAddr;
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
+use alloc::string::ToString;
 use alloc::{ffi::CString, format};
 use edge_http::io::client::Connection;
 use edge_nal_embassy::{Tcp, TcpBuffers};
-use embassy_net::{IpAddress, Stack};
+use embassy_net::IpAddress;
 use embassy_time::Timer;
 use embedded_io_async::Read;
 use esp_hal_ota::Ota;
-use esp_mbedtls::{Certificates, TlsReference, TlsVersion, X509};
+use esp_mbedtls::{Certificates, TlsVersion, X509};
 use esp_storage::FlashStorage;
 use semver::{Version, VersionReq};
 use serde::Deserialize;
 
 use super::framework::Framework;
 
-enum Report {
+enum Report<'a> {
     Status,
     Failure,
     Complete,
     Success,
+    Version(&'a str, bool),
 }
 
 #[derive(Clone, Copy, PartialEq, Deserialize)]
 pub enum OtaRequest {
     CheckVersion,
     Update,
+}
+
+pub trait OtaObserver {
+    fn on_ota_start(&mut self);
+    fn on_ota_status(&mut self, text: &str);
+    fn on_ota_failed(&mut self, text: &str);
+    fn on_ota_completed(&mut self, text: &str);
+    fn on_ota_version_available(&mut self, version: &str, newer: bool);
+}
+
+struct FrameworkOtaObserver {
+    framework: Rc<RefCell<Framework>>,
+    update: bool,
+}
+
+impl OtaObserver for FrameworkOtaObserver {
+    fn on_ota_start(&mut self) {
+        if self.update {
+            self.framework.borrow_mut().notify_ota_start();
+        }
+    }
+
+    fn on_ota_status(&mut self, text: &str) {
+        if self.update {
+            self.framework.borrow_mut().notify_ota_status(text);
+        }
+    }
+
+    fn on_ota_failed(&mut self, text: &str) {
+        if self.update {
+            self.framework.borrow_mut().notify_ota_failed(text);
+        }
+    }
+
+    fn on_ota_completed(&mut self, text: &str) {
+        if self.update {
+            self.framework.borrow_mut().notify_ota_completed(text);
+        }
+    }
+
+    fn on_ota_version_available(&mut self, version: &str, newer: bool) {
+        self.framework
+            .borrow_mut()
+            .notify_ota_version_available(version, newer);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -37,41 +84,77 @@ pub async fn ota_task(
     ota_path: &'static str,
     ota_toml_filename: &'static str,
     cert: &'static str,
-    stack: Stack<'static>,
-    tls: TlsReference<'static>,
     ota_request: OtaRequest,
     framework: Rc<RefCell<Framework>>,
 ) {
-    let observer = framework.clone();
+    let mut framework_observer = FrameworkOtaObserver {
+        framework: framework.clone(),
+        update: matches!(ota_request, OtaRequest::Update),
+    };
+
+    let curr_ver = framework
+        .borrow()
+        .settings
+        .app_cargo_pkg_version
+        .to_string();
+    run_ota(
+        ota_domain,
+        ota_path,
+        ota_toml_filename,
+        &curr_ver,
+        cert,
+        ota_request,
+        framework,
+        &mut framework_observer,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_ota(
+    ota_domain: &'static str,
+    ota_path: &'static str,
+    ota_toml_filename: &'static str,
+    cur_version: &str,
+    cert: &'static str,
+    ota_request: OtaRequest,
+    framework: Rc<RefCell<Framework>>,
+    observer: &mut dyn OtaObserver,
+) {
+    let stack = framework.borrow().stack;
+    let tls = framework.borrow().tls;
+
     if ota_request == OtaRequest::Update {
-        observer.borrow_mut().notify_ota_start();
+        observer.on_ota_start();
     }
 
-    let observer_clone = observer.clone();
-    let report = move |report: Report, text: &str| match report {
+    let mut report = move |report: Report, text: &str| match report {
         Report::Status => {
-            if ota_request == OtaRequest::Update {
-                observer_clone.borrow_mut().notify_ota_status(text);
-            }
+            // if ota_request == OtaRequest::Update {
+            observer.on_ota_status(text);
+            // }
             info!("{text}");
         }
         Report::Failure => {
-            if ota_request == OtaRequest::Update {
-                observer_clone.borrow_mut().notify_ota_failed(text);
-            }
+            // if ota_request == OtaRequest::Update {
+            observer.on_ota_failed(text);
+            // }
             warn!("{text}");
         }
         Report::Complete => {
-            if ota_request == OtaRequest::Update {
-                observer_clone.borrow_mut().notify_ota_completed(text);
-            }
+            // if ota_request == OtaRequest::Update {
+            observer.on_ota_completed(text);
+            // }
             info!("{text}");
         }
         Report::Success => {
-            if ota_request == OtaRequest::Update {
-                observer_clone.borrow_mut().notify_ota_completed(text);
-            }
+            // if ota_request == OtaRequest::Update {
+            observer.on_ota_completed(text);
+            // }
             info!("{text}");
+        }
+        Report::Version(version, newer) => {
+            observer.on_ota_version_available(version, newer);
         }
     };
     report(Report::Status, "Resolving Dns");
@@ -214,10 +297,18 @@ pub async fn ota_task(
         }
     };
 
-    let mut curr_req =
-        VersionReq::parse(framework.borrow().settings.app_cargo_pkg_version).unwrap();
-    curr_req.comparators[0].op = semver::Op::Greater;
-    if !curr_req.matches(&new_semver) {
+    let newer = {
+        if let Ok(mut curr_req) =
+            VersionReq::parse(cur_version)
+        {
+            curr_req.comparators[0].op = semver::Op::Greater;
+            curr_req.matches(&new_semver)
+        } else {
+            false
+        }
+    };
+
+    if !newer {
         report(
             Report::Complete,
             &format!(
@@ -225,14 +316,10 @@ pub async fn ota_task(
                 framework.borrow().settings.app_cargo_pkg_version
             ),
         );
-        observer
-            .borrow_mut()
-            .notify_ota_version_available(version, false);
+        report(Report::Version(version, false), "Version is up to date");
         return;
     } else {
-        observer
-            .borrow_mut()
-            .notify_ota_version_available(version, true);
+        report(Report::Version(version, true), "Version is behind");
     }
 
     if ota_request == OtaRequest::CheckVersion {
@@ -311,11 +398,10 @@ pub async fn ota_task(
             }
 
             let res = ota.ota_write_chunk(&data_buf[..bytes_to_read]);
-            // let res : Result<bool, esp_hal_ota::OtaError> = Ok(false);
 
             match res {
                 Ok(true) => {
-                    let res = ota.ota_flush(false, true);
+//                     let res = ota.ota_flush(false, true);
                     sec_since_start = start_time.elapsed().as_secs();
                     debug!(
                         "Finished: {x}: {sec_since_start} secs, {bytes_read} {bytes_read} {:.0}%",
@@ -334,7 +420,8 @@ pub async fn ota_task(
                         report(
                             Report::Success,
                             &format!(
-                                "Firmware version {} flashed successfully\nRestarting in {} seconds",
+                                "Firmware version {} flashed successfully\nRestarting {} in {} seconds",
+                                framework.borrow().settings.app_cargo_pkg_name,
                                 new_semver,
                                 5 - countdown
                             ),
