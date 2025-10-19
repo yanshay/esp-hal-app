@@ -10,10 +10,13 @@ use embassy_executor::Spawner;
 use embassy_futures::block_on;
 use embassy_net::Stack;
 use embassy_sync::{
-    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
-    mutex::Mutex,
+    blocking_mutex::raw::NoopRawMutex,
     pubsub::{PubSubChannel, Publisher, Subscriber},
 };
+#[allow(unused_imports)]
+use embassy_sync::mutex::Mutex;
+#[allow(unused_imports)]
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Timer;
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use esp_hal::{
