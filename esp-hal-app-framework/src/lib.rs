@@ -54,6 +54,8 @@ pub mod prelude {
     pub use trace;
     pub const FRAMEWORK_STA_STACK_RESOURCES: usize = 5; // potentially https captive +  ota + captive dns + ? initial firmware check if doen't complete + mDNS
     pub const FRAMEWORK_AP_STACK_RESOURCES: usize = 5;
+    pub use crate::utils::AwaitHeap;
+    pub use crate::utils::SpawnerHeapExt;
 }
 
 #[cfg(feature = "extern-random")]

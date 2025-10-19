@@ -30,7 +30,7 @@ use serde::Serialize;
 use super::{
     flash_map::FlashMap, framework_web_app::derive_key, ota::ota_task, terminal::Terminal,
 };
-use crate::settings::{FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES};
+use crate::{settings::{FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES}, utils::SpawnerHeapExt};
 use crate::{
     mdns::mdns_task, ntp::ntp_task, ota::OtaRequest, sdcard_store::SDCardStore,
     web_server::WebServerCommand,
@@ -386,7 +386,7 @@ impl Framework {
         if self.settings.mdns {
             if self.device_name.is_some() {
                 self.spawner
-                    .spawn(mdns_task(self.framework.as_ref().unwrap().clone()))
+                    .spawn_heap(mdns_task(self.framework.as_ref().unwrap().clone()))
                     .ok();
             } else {
                 warn!("mDNS not activated - device name not configured");

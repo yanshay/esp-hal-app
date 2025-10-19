@@ -18,6 +18,8 @@ use esp_wifi::wifi::{
 
 use deku::DekuContainerRead as _;
 
+use crate::utils::SpawnerHeapExt;
+
 use super::{
     framework::{Framework, WebConfigMode},
     improv_wifi::*,
@@ -116,10 +118,10 @@ pub async fn connection_task_inner(
         controller.set_configuration(&client_config).unwrap();
         controller.start_async().await.unwrap();
         // spawner.spawn(crate::framework::wifi::ap_net_task(ap_runner)).ok();
-        spawner.spawn(dhcp_server(ap_stack, framework.clone())).ok();
+        spawner.spawn_heap(dhcp_server(ap_stack, framework.clone())).ok();
         if framework.borrow().settings.web_server_captive {
             spawner
-                .spawn(captive_portal(ap_stack, framework.clone()))
+                .spawn_heap(captive_portal(ap_stack, framework.clone()))
                 .ok();
         }
         Timer::after(Duration::from_millis(1000)).await; // why wait (in original example)
@@ -506,7 +508,7 @@ pub async fn connection_task_inner(
     }
 }
 
-#[embassy_executor::task]
+// #[embassy_executor::task]
 async fn dhcp_server(stack: Stack<'static>, framework: Rc<RefCell<Framework>>) {
     let ap_addr = framework.borrow().settings.ap_addr;
     let mut server: edge_dhcp::server::Server<fn() -> u64, 3> =
@@ -533,7 +535,7 @@ async fn dhcp_server(stack: Stack<'static>, framework: Rc<RefCell<Framework>>) {
         .unwrap();
 }
 
-#[embassy_executor::task]
+// #[embassy_executor::task]
 async fn captive_portal(stack: Stack<'static>, framework: Rc<RefCell<Framework>>) {
     let ap_addr = framework.borrow().settings.ap_addr;
     let udp_buffers: edge_nal_embassy::UdpBuffers<1, 512, 512, 1> =

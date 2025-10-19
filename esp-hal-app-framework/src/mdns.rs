@@ -7,7 +7,7 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
 
 use crate::prelude::Framework;
 
-#[embassy_executor::task]
+// #[embassy_executor::task]
 pub async fn mdns_task(framework: Rc<RefCell<Framework>>) {
     if framework.borrow().device_name.is_none() {
         return;

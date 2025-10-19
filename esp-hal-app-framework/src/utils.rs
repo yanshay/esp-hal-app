@@ -1,3 +1,8 @@
+use core::{future::Future, pin::Pin};
+
+use alloc::boxed::Box;
+use embassy_executor::{raw::TaskStorage, SpawnError, Spawner};
+
 #[macro_export]
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -41,3 +46,26 @@ impl<E: core::fmt::Debug> core::fmt::Display for DebugWrap<E> {
     }
 }
 
+pub trait SpawnerHeapExt {
+    fn spawn_heap<Fut>(&self, fut: Fut) -> Result<(), SpawnError>
+    where
+        Fut: Future<Output = ()> + 'static;
+}
+
+impl SpawnerHeapExt for Spawner {
+    fn spawn_heap<Fut>(&self, fut: Fut) -> Result<(), SpawnError>
+    where
+        Fut: Future<Output = ()> + 'static,
+    {
+        let task = Box::leak(Box::new(TaskStorage::new())).spawn(|| fut);
+        self.spawn(task)
+    }
+}
+
+pub trait AwaitHeap: Future + Sized {
+    fn await_heap(self) -> Pin<Box<Self>> {
+        Box::pin(self)
+    }
+}
+
+impl<F: Future + Sized> AwaitHeap for F {}
