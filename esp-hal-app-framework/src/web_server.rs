@@ -376,7 +376,12 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
                     );
                 }
                 Err(err) => {
-                    error!("[{task_id}] Error handling request : {:?}", &err);
+                    match err {
+                        picoserve::Error::ReadTimeout => (),
+                        _ => {
+                            error!("[{task_id}] Error handling request : {:?}", &err);
+                        }
+                    }
                 }
             }
         }

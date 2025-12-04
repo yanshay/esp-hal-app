@@ -261,7 +261,7 @@ pub async fn run_ota(
     };
 
     let toml = core::str::from_utf8(&data_buf[..len]).unwrap_or_default();
-    info!("Firmware metadata:\n{}", toml);
+    info!("Firmware metadata:\n{}", toml.trim());
 
     let mut filename = None;
     let mut crc32 = None;
