@@ -3,7 +3,7 @@ use core::{cell::RefCell, slice};
 use embassy_futures::select::{select3, select4, Either3, Either4};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Timer};
-use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
+use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::{
     dma::DmaTxBuf,
     dma_buffers,
@@ -396,9 +396,9 @@ async fn stats_task() {
 }
 
 #[allow(non_snake_case)]
-pub struct WT32SC01PlusDisplayPeripherals<C, P>
+pub struct WT32SC01PlusDisplayPeripherals<CHLCD, P>
 where
-    C: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
+    CHLCD: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
     P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
 {
     pub GPIO47: GpioPin<47>,
@@ -418,20 +418,22 @@ where
     pub GPIO5: GpioPin<5>,
     pub GPIO6: GpioPin<6>,
     pub GPIO7: GpioPin<7>,
-    pub DMA_CHx: C,
+    pub DMA_CHx: CHLCD,
     pub I2Cx: P,
 }
 
 #[allow(non_snake_case)]
-pub struct WT32SC01PlusSDCardPeripherals<S>
+pub struct WT32SC01PlusSDCardPeripherals<S, CHSD>
 where
     S: esp_hal::peripheral::Peripheral<P: esp_hal::spi::master::Instance> + 'static,
+    CHSD: esp_hal::dma::DmaChannelFor<spi::AnySpi>,
 {
     pub GPIO38: GpioPin<38>,
     pub GPIO39: GpioPin<39>,
     pub GPIO40: GpioPin<40>,
     pub GPIO41: GpioPin<41>,
     pub SPIx: S,
+    pub DMA_CHx: CHSD,
 }
 
 type InitDone = Signal<CriticalSectionRawMutex, Result<(), String>>;
@@ -442,20 +444,29 @@ pub struct WT32SC01Plus {
 
 impl WT32SC01Plus {
     #[allow(clippy::type_complexity)]
-    pub fn new<'a, C, P, S>(
-        display_peripherals: WT32SC01PlusDisplayPeripherals<C, P>,
-        sdcard_peripherals: WT32SC01PlusSDCardPeripherals<S>,
+    pub fn new<'a, CHLCD, P, S, CHSD>(
+        display_peripherals: WT32SC01PlusDisplayPeripherals<CHLCD, P>,
+        sdcard_peripherals: WT32SC01PlusSDCardPeripherals<S, CHSD>,
         display_orientation: mipidsi::options::Orientation,
         framework: Rc<RefCell<Framework>>,
     ) -> (
         Self,
-        WT32SC01PlusRunner<C, P>,
-        ExclusiveDevice<Spi<'a, esp_hal::Async>, Output<'a>, NoDelay>,
+        WT32SC01PlusRunner<CHLCD, P>,
+        // No DMA version
+        // ExclusiveDevice<Spi<'a, esp_hal::Async>, Output<'a>, NoDelay>,
+
+        // DMA Version
+        ExclusiveDevice<
+            esp_hal::spi::master::SpiDmaBus<'a, esp_hal::Async>,
+            esp_hal::gpio::Output<'a>,
+            embedded_hal_bus::spi::NoDelay,
+        >,
     )
     where
-        C: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
+        CHLCD: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
         P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
         S: esp_hal::peripheral::Peripheral<P: esp_hal::spi::master::Instance> + 'static,
+        CHSD: esp_hal::dma::DmaChannelFor<spi::AnySpi> +'a,
     {
         let init_done = mk_static!(InitDone, InitDone::new());
         let runner = WT32SC01PlusRunner {
@@ -472,23 +483,72 @@ impl WT32SC01Plus {
         let sd_mosi = sdcard_peripherals.GPIO40;
         let spix = sdcard_peripherals.SPIx;
 
+        // Non DMA version ////////////////////////////////////////
+
+        // let spi_bus = Spi::new(
+        //     spix,
+        //     spi::master::Config::default()
+        //         .with_frequency(2.MHz())
+        //         .with_mode(spi::Mode::_0),
+        // )
+        // .unwrap()
+        // .with_sck(sd_sclk)
+        // .with_miso(sd_miso)
+        // .with_mosi(sd_mosi)
+        // .into_async();
+
+        // let sdcard_spi_device: ExclusiveDevice<
+        //     esp_hal::spi::master::Spi<'_, esp_hal::Async>,
+        //     esp_hal::gpio::Output<'_>,
+        //     embedded_hal_bus::spi::NoDelay,
+        // > = ExclusiveDevice::new_no_delay(spi_bus, sd_cs).unwrap();
+
+        // DMA version /////////////////////////////////////////////
+
+        use esp_hal::dma::DmaRxBuf;
+        const DMA_BUFFER_SIZE: usize = 1024;
+
+        let (tx_buffer, tx_descriptors, _, _) = esp_hal::dma_buffers!(DMA_BUFFER_SIZE, 0);
+        // info!(
+        //     "tx: {:p} len {} ({} descriptors)",
+        //     tx_buffer.as_ptr(),
+        //     tx_buffer.len(),
+        //     tx_descriptors.len()
+        // );
+        let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
+
+        let (rx_buffer, rx_descriptors, _, _) = esp_hal::dma_buffers!(DMA_BUFFER_SIZE, 0);
+        // info!(
+        //     "RX: {:p} len {} ({} descriptors)",
+        //     rx_buffer.as_ptr(),
+        //     rx_buffer.len(),
+        //     rx_descriptors.len()
+        // );
+        let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
+        // Need to set miso first so that mosi can overwrite the
+        // output connection (because we are using the same pin to loop back)
+        let dma_ch = sdcard_peripherals.DMA_CHx;
         let spi_bus = Spi::new(
             spix,
             spi::master::Config::default()
-                .with_frequency(2.MHz())
+                .with_frequency(20.MHz()) // 2 or 25.MHz()?
                 .with_mode(spi::Mode::_0),
         )
         .unwrap()
         .with_sck(sd_sclk)
         .with_miso(sd_miso)
         .with_mosi(sd_mosi)
+        .with_dma(dma_ch)
+        .with_buffers(dma_rx_buf, dma_tx_buf)
         .into_async();
 
         let sdcard_spi_device: ExclusiveDevice<
-            esp_hal::spi::master::Spi<'_, esp_hal::Async>,
+            esp_hal::spi::master::SpiDmaBus<'_, esp_hal::Async>,
             esp_hal::gpio::Output<'_>,
             embedded_hal_bus::spi::NoDelay,
         > = ExclusiveDevice::new_no_delay(spi_bus, sd_cs).unwrap();
+
+        ////////////////////////////////////////////////////////////
 
         (me, runner, sdcard_spi_device)
     }
@@ -670,7 +730,9 @@ where
         );
         touch_inner.set_orientation(ft6x36orientation);
         if touch_inner.init().is_err() {
-            panic!("Failed to initialize touch. Did you flash the correct device? (WT32-SC01 Plus)");
+            panic!(
+                "Failed to initialize touch. Did you flash the correct device? (WT32-SC01 Plus)"
+            );
         }
 
         // Turn on display backlight

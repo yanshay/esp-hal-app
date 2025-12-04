@@ -9,14 +9,14 @@ use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::Spawner;
 use embassy_futures::block_on;
 use embassy_net::Stack;
+#[allow(unused_imports)]
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+#[allow(unused_imports)]
+use embassy_sync::mutex::Mutex;
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     pubsub::{PubSubChannel, Publisher, Subscriber},
 };
-#[allow(unused_imports)]
-use embassy_sync::mutex::Mutex;
-#[allow(unused_imports)]
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::Timer;
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use esp_hal::{
@@ -30,14 +30,20 @@ use serde::Serialize;
 use super::{
     flash_map::FlashMap, framework_web_app::derive_key, ota::ota_task, terminal::Terminal,
 };
-use crate::{settings::{FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES}, utils::SpawnerHeapExt};
 use crate::{
     mdns::mdns_task, ntp::ntp_task, ota::OtaRequest, sdcard_store::SDCardStore,
     web_server::WebServerCommand,
 };
+use crate::{
+    settings::{FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES},
+    utils::SpawnerHeapExt,
+};
 
-pub type SDCardStoreType =
-    SDCardStore<ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>, FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES>;
+pub type SDCardStoreType = SDCardStore<
+    ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>,
+    FILE_STORE_MAX_DIRS,
+    FILE_STORE_MAX_FILES,
+>;
 
 const WIFI_CONFIG_KEY: &str = "__wifi__";
 const FIXED_KEY_CONFIG_KEY: &str = "__fixed_key__";
@@ -177,7 +183,15 @@ pub struct Framework {
             Mutex<
                 CriticalSectionRawMutex,
                 SDCardStore<
-                    ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>,
+                    // Non DMA:
+                    // ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>,
+
+                    // DMA:
+                    ExclusiveDevice<
+                        esp_hal::spi::master::SpiDmaBus<'static, esp_hal::Async>,
+                        Output<'static>,
+                        NoDelay,
+                    >,
                     20,
                     5,
                 >,
@@ -405,8 +419,17 @@ impl Framework {
     #[cfg(feature = "wt32-sc01-plus")]
     pub async fn set_sdcard_device(
         framework: Rc<RefCell<Framework>>,
+        // Non DMA Version
+
+        // sdcard_device: ExclusiveDevice<
+        //     esp_hal::spi::master::Spi<'static, esp_hal::Async>,
+        //     esp_hal::gpio::Output<'static>,
+        //     embedded_hal_bus::spi::NoDelay,
+        // >,
+
+        // DMA Version
         sdcard_device: ExclusiveDevice<
-            esp_hal::spi::master::Spi<'static, esp_hal::Async>,
+            esp_hal::spi::master::SpiDmaBus<'static, esp_hal::Async>,
             esp_hal::gpio::Output<'static>,
             embedded_hal_bus::spi::NoDelay,
         >,
@@ -428,7 +451,15 @@ impl Framework {
         Mutex<
             CriticalSectionRawMutex,
             SDCardStore<
-                ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>,
+                // No DMA version
+                // ExclusiveDevice<Spi<'static, esp_hal::Async>, Output<'static>, NoDelay>,
+
+                // DMA version
+                ExclusiveDevice<
+                    esp_hal::spi::master::SpiDmaBus<'static, esp_hal::Async>,
+                    Output<'static>,
+                    NoDelay,
+                >,
                 20,
                 5,
             >,
