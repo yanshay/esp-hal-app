@@ -13,7 +13,7 @@ use embedded_io_async::Read;
 use esp_hal_ota::Ota;
 use esp_mbedtls::{Certificates, TlsVersion, X509};
 use esp_storage::FlashStorage;
-use semver::{Version, VersionReq};
+use semver::Version;
 use serde::Deserialize;
 
 use super::framework::Framework;
@@ -297,14 +297,18 @@ pub async fn run_ota(
         }
     };
 
-    let newer = {
-        if let Ok(mut curr_req) = VersionReq::parse(cur_version) {
-            curr_req.comparators[0].op = semver::Op::Greater;
-            curr_req.matches(&new_semver)
-        } else {
-            false
+    let cur_semver = match Version::parse(cur_version) {
+        Ok(v) => v,
+        Err(_) => {
+            report(
+                Report::Failure,
+                "Current product version number is invalid",
+            );
+            return;
         }
     };
+
+    let newer = new_semver > cur_semver;
 
     if !newer {
         report(

@@ -657,6 +657,7 @@ pub fn derive_key(key: &str, salt: &[u8], iterations: u32) -> Vec<u8> {
 pub fn encrypt_bytes(key_bytes: &[u8], data: &[u8]) -> String {
     // Derive key (32 bytes from a user-provided key)
 
+    assert!(!key_bytes.is_empty());
     // let key_bytes = derive_key(key);
     let key = Key::<Aes256Gcm>::from_slice(key_bytes);
 
