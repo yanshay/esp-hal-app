@@ -297,18 +297,11 @@ pub async fn run_ota(
         }
     };
 
-    let cur_semver = match Version::parse(cur_version) {
-        Ok(v) => v,
-        Err(_) => {
-            report(
-                Report::Failure,
-                "Current product version number is invalid",
-            );
-            return;
-        }
+    let newer = if let Ok(cur_semver) = Version::parse(cur_version) {
+        new_semver > cur_semver
+    } else {
+        false
     };
-
-    let newer = new_semver > cur_semver;
 
     if !newer {
         report(
