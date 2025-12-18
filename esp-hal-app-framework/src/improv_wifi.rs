@@ -1,47 +1,191 @@
 use alloc::{
-    format,
     string::{String, ToString},
     vec,
     vec::Vec,
 };
-use deku::prelude::*;
 
-// https://www.improv-wifi.com/serial/
+// Error type ================================================
 
-// Packet format ################################################33
+#[derive(Debug, PartialEq)]
+pub enum ParseError {
+    Incomplete,
+    InvalidMagic,
+    InvalidChecksum,
+    InvalidUtf8,
+    InvalidDataType(u8),
+    InvalidCommand(u8),
+    InvalidState(u8),
+    InvalidError(u8),
+}
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
-#[deku(magic = b"\x0A")]
+// Parser helper =============================================
+
+struct Parser<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Parser<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    fn read_u8(&mut self) -> Result<u8, ParseError> {
+        if self.pos >= self.data.len() {
+            return Err(ParseError::Incomplete);
+        }
+        let val = self.data[self.pos];
+        self.pos += 1;
+        Ok(val)
+    }
+
+    fn read_magic(&mut self, magic: &[u8]) -> Result<(), ParseError> {
+        if self.pos + magic.len() > self.data.len() {
+            return Err(ParseError::Incomplete);
+        }
+        if &self.data[self.pos..self.pos + magic.len()] != magic {
+            return Err(ParseError::InvalidMagic);
+        }
+        self.pos += magic.len();
+        Ok(())
+    }
+
+    fn read_vec(&mut self, count: usize) -> Result<Vec<u8>, ParseError> {
+        if self.pos + count > self.data.len() {
+            return Err(ParseError::Incomplete);
+        }
+        let vec = self.data[self.pos..self.pos + count].to_vec();
+        self.pos += count;
+        Ok(vec)
+    }
+
+    fn read_string(&mut self) -> Result<String, ParseError> {
+        let len = self.read_u8()?;
+        let bytes = self.read_vec(len as usize)?;
+        String::from_utf8(bytes).map_err(|_| ParseError::InvalidUtf8)
+    }
+
+    #[allow(dead_code)]
+    fn peek_u8(&self) -> Result<u8, ParseError> {
+        if self.pos >= self.data.len() {
+            return Err(ParseError::Incomplete);
+        }
+        Ok(self.data[self.pos])
+    }
+
+    #[allow(dead_code)]
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+}
+
+// Writer helper =============================================
+
+struct Writer {
+    data: Vec<u8>,
+}
+
+impl Writer {
+    fn new() -> Self {
+        Self { data: Vec::new() }
+    }
+
+    fn write_u8(&mut self, val: u8) {
+        self.data.push(val);
+    }
+
+    fn write_magic(&mut self, magic: &[u8]) {
+        self.data.extend_from_slice(magic);
+    }
+
+    fn write_slice(&mut self, slice: &[u8]) {
+        self.data.extend_from_slice(slice);
+    }
+
+    fn write_string(&mut self, s: &str) {
+        self.write_u8(s.len() as u8);
+        self.write_slice(s.as_bytes());
+    }
+
+    fn into_vec(self) -> Vec<u8> {
+        self.data
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+// Packet format ################################################
+
+#[derive(Debug, PartialEq)]
 struct AlwaysTen {}
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
-#[deku(magic = b"IMPROV\x01")]
+impl AlwaysTen {
+    fn parse(parser: &mut Parser) -> Result<Self, ParseError> {
+        parser.read_magic(b"\x0A")?;
+        Ok(AlwaysTen {})
+    }
+
+    fn write(&self, writer: &mut Writer) {
+        writer.write_magic(b"\x0A");
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub struct ImprovWifiPacket {
-    #[deku(writer = "Self::data_type_writer(deku::writer, data)")]
     data_type: u8,
-    #[deku(writer = "Self::data_length_writer(deku::writer, data)")]
     data_length: u8,
-    #[deku(ctx = "*data_type")]
     pub data: ImprovWifiPacketData,
     checksum: u8,
     always_ten: AlwaysTen,
 }
 
 impl ImprovWifiPacket {
-    fn data_type_writer<W: no_std_io::io::Write>(
-        writer: &mut deku::writer::Writer<W>,
-        data: &ImprovWifiPacketData,
-    ) -> Result<(), DekuError> {
-        let value: u8 = data.deku_id().unwrap();
-        value.to_writer(writer, deku::ctx::Endian::Big)
-    }
+    pub fn from_bytes(input: (&[u8], usize)) -> Result<((&[u8], usize), Self), ParseError> {
+        let (input_data, bit_offset) = input;
+        if bit_offset != 0 {
+            // deku works with bit offsets, but we only support byte-aligned
+            return Err(ParseError::Incomplete);
+        }
 
-    fn data_length_writer<W: no_std_io::io::Write>(
-        writer: &mut deku::writer::Writer<W>,
-        data: &ImprovWifiPacketData,
-    ) -> Result<(), DekuError> {
-        let value: u8 = data.get_data_length();
-        value.to_writer(writer, deku::ctx::Endian::Big)
+        let mut parser = Parser::new(input_data);
+        
+        // Read magic
+        parser.read_magic(b"IMPROV\x01")?;
+        
+        // Read data_type and data_length
+        let data_type = parser.read_u8()?;
+        let data_length = parser.read_u8()?;
+        
+        // Read data
+        let data = ImprovWifiPacketData::parse(&mut parser, data_type)?;
+        
+        // Read checksum
+        let checksum = parser.read_u8()?;
+        
+        // Read always_ten
+        let always_ten = AlwaysTen::parse(&mut parser)?;
+        
+        // Verify checksum (all bytes except checksum and always_ten)
+        let checksum_end = parser.pos - 2; // exclude checksum and 0x0A
+        let calculated_checksum: u8 = input_data[..checksum_end]
+            .iter()
+            .fold(0, |acc, &x| acc.wrapping_add(x));
+        
+        if checksum != calculated_checksum {
+            return Err(ParseError::InvalidChecksum);
+        }
+        
+        let packet = ImprovWifiPacket {
+            data_type,
+            data_length,
+            data,
+            checksum,
+            always_ten,
+        };
+        
+        Ok(((&input_data[parser.pos..], 0), packet))
     }
 
     // builders
@@ -65,6 +209,7 @@ impl ImprovWifiPacket {
             data: ImprovWifiPacketData::ErrorState(error_state_option),
         }
     }
+    
     pub fn new_rpc_result(rpc_result: RPCResultStruct) -> Self {
         ImprovWifiPacket {
             data_type: 0,
@@ -90,35 +235,64 @@ impl ImprovWifiPacket {
         }
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, DekuError> {
-        let mut bytes = <ImprovWifiPacket as DekuContainerWrite>::to_bytes(self)?;
-        let checksum_pos = bytes.len() - 2;
-        let checksum: u8 = bytes[..bytes.len() - 2]
+    pub fn to_bytes(&self) -> Result<Vec<u8>, ParseError> {
+        let mut writer = Writer::new();
+        
+        // Write magic
+        writer.write_magic(b"IMPROV\x01");
+        
+        // Write data_type (derived from data)
+        let data_type = self.data.get_type_id();
+        writer.write_u8(data_type);
+        
+        // Write data_length (derived from data)
+        let data_length = self.data.get_data_length();
+        writer.write_u8(data_length);
+        
+        // Write data
+        self.data.write(&mut writer);
+        
+        // Calculate and write checksum (all bytes so far)
+        let checksum: u8 = writer.as_slice()
             .iter()
             .fold(0, |acc, &x| acc.wrapping_add(x));
-        bytes[checksum_pos] = checksum;
-        Ok(bytes)
+        writer.write_u8(checksum);
+        
+        // Write always_ten
+        self.always_ten.write(&mut writer);
+        
+        Ok(writer.into_vec())
     }
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
-#[deku(ctx = "data_type: u8", id = "data_type")]
+#[derive(Debug, PartialEq)]
 pub enum ImprovWifiPacketData {
-    #[deku(id = 0x01)]
     CurrentState(CurrentStateOption),
-    #[deku(id = 0x02)]
     ErrorState(ErrorStateOption),
-
-    #[deku(id = 0x03)]
-    #[allow(clippy::upper_case_acronyms)]
     RPC(RPCCommandStruct),
-
-    #[deku(id = 0x04)]
-    #[allow(clippy::upper_case_acronyms)]
     RPCResult(RPCResultStruct),
 }
 
 impl ImprovWifiPacketData {
+    fn parse(parser: &mut Parser, data_type: u8) -> Result<Self, ParseError> {
+        match data_type {
+            0x01 => Ok(ImprovWifiPacketData::CurrentState(CurrentStateOption::parse(parser)?)),
+            0x02 => Ok(ImprovWifiPacketData::ErrorState(ErrorStateOption::parse(parser)?)),
+            0x03 => Ok(ImprovWifiPacketData::RPC(RPCCommandStruct::parse(parser)?)),
+            0x04 => Ok(ImprovWifiPacketData::RPCResult(RPCResultStruct::parse(parser)?)),
+            _ => Err(ParseError::InvalidDataType(data_type)),
+        }
+    }
+
+    fn write(&self, writer: &mut Writer) {
+        match self {
+            ImprovWifiPacketData::CurrentState(s) => s.write(writer),
+            ImprovWifiPacketData::ErrorState(s) => s.write(writer),
+            ImprovWifiPacketData::RPC(s) => s.write(writer),
+            ImprovWifiPacketData::RPCResult(s) => s.write(writer),
+        }
+    }
+
     pub fn get_data_length(&self) -> u8 {
         match self {
             ImprovWifiPacketData::CurrentState(current_state) => current_state.get_data_length(),
@@ -127,103 +301,161 @@ impl ImprovWifiPacketData {
             ImprovWifiPacketData::RPCResult(rpc_result) => rpc_result.get_data_length(),
         }
     }
+
+    fn get_type_id(&self) -> u8 {
+        match self {
+            ImprovWifiPacketData::CurrentState(_) => 0x01,
+            ImprovWifiPacketData::ErrorState(_) => 0x02,
+            ImprovWifiPacketData::RPC(_) => 0x03,
+            ImprovWifiPacketData::RPCResult(_) => 0x04,
+        }
+    }
 }
 
 // Current State =================================
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
-#[deku(id_type = "u8")]
+#[derive(Debug, PartialEq)]
 pub enum CurrentStateOption {
-    #[deku(id = 0x02)]
     Ready,
-    #[deku(id = 0x03)]
     Provisioning,
-    #[deku(id = 0x04)]
     Provisioned,
 }
 
 impl CurrentStateOption {
+    fn parse(parser: &mut Parser) -> Result<Self, ParseError> {
+        let val = parser.read_u8()?;
+        match val {
+            0x02 => Ok(CurrentStateOption::Ready),
+            0x03 => Ok(CurrentStateOption::Provisioning),
+            0x04 => Ok(CurrentStateOption::Provisioned),
+            _ => Err(ParseError::InvalidState(val)),
+        }
+    }
+
+    fn write(&self, writer: &mut Writer) {
+        let val = match self {
+            CurrentStateOption::Ready => 0x02,
+            CurrentStateOption::Provisioning => 0x03,
+            CurrentStateOption::Provisioned => 0x04,
+        };
+        writer.write_u8(val);
+    }
+
     pub fn get_data_length(&self) -> u8 {
-        // always length 1
         0x01
     }
 }
 
 // Error State =================================
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
-#[deku(id_type = "u8")]
+#[derive(Debug, PartialEq)]
 pub enum ErrorStateOption {
-    #[deku(id = 0x00)]
     NoError,
-    #[deku(id = 0x01)]
     InvalidRPCPacket,
-    #[deku(id = 0x02)]
     UnknownRPCCommand,
-    #[deku(id = 0x03)]
     UnableToConnect,
-    #[deku(id = 0xFF)]
     UnknownError,
 }
 
 impl ErrorStateOption {
+    fn parse(parser: &mut Parser) -> Result<Self, ParseError> {
+        let val = parser.read_u8()?;
+        match val {
+            0x00 => Ok(ErrorStateOption::NoError),
+            0x01 => Ok(ErrorStateOption::InvalidRPCPacket),
+            0x02 => Ok(ErrorStateOption::UnknownRPCCommand),
+            0x03 => Ok(ErrorStateOption::UnableToConnect),
+            0xFF => Ok(ErrorStateOption::UnknownError),
+            _ => Err(ParseError::InvalidError(val)),
+        }
+    }
+
+    fn write(&self, writer: &mut Writer) {
+        let val = match self {
+            ErrorStateOption::NoError => 0x00,
+            ErrorStateOption::InvalidRPCPacket => 0x01,
+            ErrorStateOption::UnknownRPCCommand => 0x02,
+            ErrorStateOption::UnableToConnect => 0x03,
+            ErrorStateOption::UnknownError => 0xFF,
+        };
+        writer.write_u8(val);
+    }
+
     pub fn get_data_length(&self) -> u8 {
-        // always length 1
         0x01
     }
 }
 
 // RPC Command ==============================
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq)]
 pub struct RPCCommandStruct {
-    #[deku(writer = "Self::command_writer(deku::writer, data)")]
     command: u8,
-    #[deku(writer = "Self::data_length_writer(deku::writer, data)")]
     data_length: u8,
-    #[deku(ctx = "*command")]
     pub data: RPCCommand,
 }
 
 impl RPCCommandStruct {
+    fn parse(parser: &mut Parser) -> Result<Self, ParseError> {
+        let command = parser.read_u8()?;
+        let data_length = parser.read_u8()?;
+        let data = RPCCommand::parse(parser, command)?;
+        
+        Ok(RPCCommandStruct {
+            command,
+            data_length,
+            data,
+        })
+    }
+
+    fn write(&self, writer: &mut Writer) {
+        // Write command (derived from data)
+        let command = self.data.get_command_id();
+        writer.write_u8(command);
+        
+        // Write data_length (derived from data)
+        let data_length = self.data.get_data_length();
+        writer.write_u8(data_length);
+        
+        // Write data
+        self.data.write(writer);
+    }
+
     pub fn get_data_length(&self) -> u8 {
         2 + self.data.get_data_length()
     }
-
-    fn command_writer<W: no_std_io::io::Write>(
-        writer: &mut deku::writer::Writer<W>,
-        data: &RPCCommand,
-    ) -> Result<(), DekuError> {
-        let value: u8 = data.deku_id().unwrap();
-        value.to_writer(writer, deku::ctx::Endian::Big)
-    }
-
-    fn data_length_writer<W: no_std_io::io::Write>(
-        writer: &mut deku::writer::Writer<W>,
-        data: &RPCCommand,
-    ) -> Result<(), DekuError> {
-        let value: u8 = data.get_data_length();
-        value.to_writer(writer, deku::ctx::Endian::Big)
-    }
 }
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
-#[deku(ctx = "command: u8", id = "command")]
+#[derive(Debug, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum RPCCommand {
-    #[deku(id = 0x01)]
     SendWifiSettings(SendWifiSettingsStruct),
-    #[deku(id = 0x02)]
     RequestCurrentState,
-    #[deku(id = 0x03)]
     RequestDeviceInformation,
-    #[deku(id = 0x04)]
     RequestScannedWifiNetworks,
 }
 
 impl RPCCommand {
+    fn parse(parser: &mut Parser, command: u8) -> Result<Self, ParseError> {
+        match command {
+            0x01 => Ok(RPCCommand::SendWifiSettings(SendWifiSettingsStruct::parse(parser)?)),
+            0x02 => Ok(RPCCommand::RequestCurrentState),
+            0x03 => Ok(RPCCommand::RequestDeviceInformation),
+            0x04 => Ok(RPCCommand::RequestScannedWifiNetworks),
+            _ => Err(ParseError::InvalidCommand(command)),
+        }
+    }
+
+    fn write(&self, writer: &mut Writer) {
+        match self {
+            RPCCommand::SendWifiSettings(s) => s.write(writer),
+            RPCCommand::RequestCurrentState => {},
+            RPCCommand::RequestDeviceInformation => {},
+            RPCCommand::RequestScannedWifiNetworks => {},
+        }
+    }
+
     pub fn get_data_length(&self) -> u8 {
-        // All commands are of data length 0, but writing explicitly
         match self {
             RPCCommand::SendWifiSettings(send_wifi_settings) => {
                 send_wifi_settings.get_data_length()
@@ -233,49 +465,93 @@ impl RPCCommand {
             RPCCommand::RequestScannedWifiNetworks => 0x00,
         }
     }
+
+    fn get_command_id(&self) -> u8 {
+        match self {
+            RPCCommand::SendWifiSettings(_) => 0x01,
+            RPCCommand::RequestCurrentState => 0x02,
+            RPCCommand::RequestDeviceInformation => 0x03,
+            RPCCommand::RequestScannedWifiNetworks => 0x04,
+        }
+    }
 }
 
 // Send Wi-Fi settings -------------------------------------------------
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq)]
 pub struct SendWifiSettingsStruct {
-    pub ssid: DekuString,
-    pub password: DekuString,
+    pub ssid: String,
+    pub password: String,
 }
 
 impl SendWifiSettingsStruct {
+    fn parse(parser: &mut Parser) -> Result<Self, ParseError> {
+        let ssid = parser.read_string()?;
+        let password = parser.read_string()?;
+        Ok(SendWifiSettingsStruct { ssid, password })
+    }
+
+    fn write(&self, writer: &mut Writer) {
+        writer.write_string(&self.ssid);
+        writer.write_string(&self.password);
+    }
+
     fn get_data_length(&self) -> u8 {
-        2 + self.ssid.content_len + self.password.content_len
+        2 + self.ssid.len() as u8 + self.password.len() as u8
     }
 }
 
 // RPC Result ==============================================
 
-#[derive(Debug, PartialEq, DekuRead, DekuWrite)]
+#[derive(Debug, PartialEq)]
 pub struct RPCResultStruct {
     command_responded: u8,
-    #[deku(writer = "Self::string_data_length_writer(deku::writer, strings)")]
     strings_data_length: u8,
-    #[deku(bytes_read = "strings_data_length")]
-    strings: Vec<DekuString>,
+    strings: Vec<String>,
 }
 
 impl RPCResultStruct {
+    fn parse(parser: &mut Parser) -> Result<Self, ParseError> {
+        let command_responded = parser.read_u8()?;
+        let strings_data_length = parser.read_u8()?;
+        
+        // Read strings until we've consumed strings_data_length bytes
+        let mut strings = Vec::new();
+        let start_pos = parser.pos;
+        
+        while parser.pos - start_pos < strings_data_length as usize {
+            strings.push(parser.read_string()?);
+        }
+        
+        Ok(RPCResultStruct {
+            command_responded,
+            strings_data_length,
+            strings,
+        })
+    }
+
+    fn write(&self, writer: &mut Writer) {
+        writer.write_u8(self.command_responded);
+        
+        // Write strings_data_length (calculated)
+        let strings_data_length = Self::get_strings_data_length(&self.strings);
+        writer.write_u8(strings_data_length);
+        
+        // Write all strings
+        for s in &self.strings {
+            writer.write_string(s);
+        }
+    }
+
     pub fn get_data_length(&self) -> u8 {
         let len: u8 = 1/*command_responded byte */+1 /*data_length byte*/ + Self::get_strings_data_length(&self.strings);
         len
     }
-    fn string_data_length_writer<W: no_std_io::io::Write>(
-        writer: &mut deku::writer::Writer<W>,
-        data: &[DekuString],
-    ) -> Result<(), DekuError> {
-        let value: u8 = Self::get_strings_data_length(data);
-        value.to_writer(writer, deku::ctx::Endian::Big)
-    }
-    fn get_strings_data_length(data: &[DekuString]) -> u8 {
+
+    fn get_strings_data_length(data: &[String]) -> u8 {
         let value: u8 = data
             .iter()
-            .fold(0, |acc, x| acc + 1/*string len byte*/ + x.content_len);
+            .fold(0, |acc, x| acc + 1/*string len byte*/ + x.len() as u8);
         value
     }
 
@@ -287,13 +563,13 @@ impl RPCResultStruct {
         device_name: &str,
     ) -> Self {
         Self {
-            command_responded: RPCCommand::RequestDeviceInformation.deku_id().unwrap(),
+            command_responded: 0x03, // RequestDeviceInformation
             strings_data_length: 0x00,
             strings: vec![
-                firmware_name.into(),
-                firmware_version.into(),
-                chip.into(),
-                device_name.into(),
+                firmware_name.to_string(),
+                firmware_version.to_string(),
+                chip.to_string(),
+                device_name.to_string(),
             ],
         }
     }
@@ -304,15 +580,15 @@ impl RPCResultStruct {
         auth_required: bool,
     ) -> Self {
         Self {
-            command_responded: RPCCommand::RequestScannedWifiNetworks.deku_id().unwrap(),
+            command_responded: 0x04, // RequestScannedWifiNetworks
             strings_data_length: 0x00,
             strings: vec![
-                ssid.into(),
-                rssi.into(),
+                ssid.to_string(),
+                rssi.to_string(),
                 if auth_required {
-                    "YES".into()
+                    "YES".to_string()
                 } else {
-                    "NO".into()
+                    "NO".to_string()
                 },
             ],
         }
@@ -320,7 +596,7 @@ impl RPCResultStruct {
 
     pub fn new_response_to_request_scanned_wifi_networks_end() -> Self {
         Self {
-            command_responded: RPCCommand::RequestScannedWifiNetworks.deku_id().unwrap(),
+            command_responded: 0x04, // RequestScannedWifiNetworks
             strings_data_length: 0x00,
             strings: vec![],
         }
@@ -328,65 +604,9 @@ impl RPCResultStruct {
 
     pub fn new_response_to_send_wifi_settings(redirect_url: &str) -> Self {
         Self {
-            command_responded: RPCCommand::SendWifiSettings(SendWifiSettingsStruct {
-                ssid: DekuString::default(),
-                password: DekuString::default(),
-            })
-            .deku_id()
-            .unwrap(),
+            command_responded: 0x01, // SendWifiSettings
             strings_data_length: 0x00,
-            strings: vec![redirect_url.into()],
+            strings: vec![redirect_url.to_string()],
         }
-    }
-}
-
-// DekuString ========================================
-
-#[derive(Debug, PartialEq, DekuRead, DekuWrite, Default)]
-pub struct DekuString {
-    content_len: u8,
-    #[deku(count = "content_len")]
-    content: Vec<u8>,
-}
-// impl DekuString {
-//     pub fn new() -> Self {
-//         Self {
-//             content_len: 0,
-//             content: Vec::new(),
-//         }
-//     }
-// }
-//
-// impl Default for DekuString {
-//     fn default() -> Self {
-//         Self::new()
-//     }
-// }
-
-impl From<String> for DekuString {
-    fn from(value: String) -> Self {
-        DekuString {
-            content_len: value.len().try_into().unwrap(),
-            content: Vec::from(value),
-        }
-    }
-}
-impl From<&str> for DekuString {
-    fn from(value: &str) -> Self {
-        DekuString {
-            content_len: value.len().try_into().unwrap(),
-            content: Vec::from(value),
-        }
-    }
-}
-impl From<DekuString> for String {
-    fn from(val: DekuString) -> Self {
-        String::from_utf8_lossy(&val.content).to_string()
-    }
-}
-
-impl<'a> From<&'a DekuString> for &'a str {
-    fn from(val: &'a DekuString) -> Self {
-        core::str::from_utf8(&val.content).unwrap()
     }
 }

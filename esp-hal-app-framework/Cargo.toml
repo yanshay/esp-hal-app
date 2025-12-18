@@ -9,9 +9,9 @@ categories   = ["embedded", "no-std"]
 repository   = "https://github.com/yanshay/esp-hal-app"
 license      = "MIT OR Apache-2.0"
 
-[patch.crates-io]
-bitvec = { git = "https://github.com/arctic-alpaca/ferrilab" }
-radium = { git = "https://github.com/arctic-alpaca/ferrilab" }
+# [patch.crates-io]
+# bitvec = { git = "https://github.com/arctic-alpaca/ferrilab" }
+# radium = { git = "https://github.com/arctic-alpaca/ferrilab" }
 
 [profile.release]
 codegen-units = 1
@@ -105,7 +105,7 @@ heapless = "0.8.0"
 critical-section = "1.2.0"
 static_cell = { version = "2.1", features = ["nightly"] }
 once_cell = { version = "1.20.2", default-features = false, features = ["alloc"] }
-deku = { version = "0.17.0", default-features = false, features = ["alloc"] }
+# deku = { version = "0.17.0", default-features = false, features = ["alloc"] }
 anyhow = { version = "1.0.91", default-features = false }
 hashbrown = { version = "0.15.0", features = ["serde"] }
 serde = { version = "1.0.213", default-features = false, features = [ "derive", "alloc", ] }

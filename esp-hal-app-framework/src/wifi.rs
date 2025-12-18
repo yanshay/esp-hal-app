@@ -16,7 +16,7 @@ use esp_wifi::wifi::{
     WifiStaDevice,
 };
 
-use deku::DekuContainerRead as _;
+// use deku::DekuContainerRead as _;
 
 use crate::utils::SpawnerHeapExt;
 
@@ -334,7 +334,7 @@ pub async fn connection_task_inner(
                                     break 'process_data; // skips one empty iteration over no data to speed things up
                                 }
                             }
-                            Err(deku::DekuError::Incomplete(_)) => {
+                            Err(ParseError::Incomplete) => {
                                 // debug!("Incomplete Deku data, will get more");
                                 break 'process_data;
                             }
