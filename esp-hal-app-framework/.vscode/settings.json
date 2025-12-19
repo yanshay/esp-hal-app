@@ -7,9 +7,9 @@
     "RUSTUP_TOOLCHAIN": "stable"
   },
   "rust-analyzer.check.extraEnv": {
-    "RUSTUP_TOOLCHAIN": "esp"
+    "RUSTUP_TOOLCHAIN": "esp1"
   },
   "rust-analyzer.cargo.extraEnv": {
-    "RUSTUP_TOOLCHAIN": "esp"
+    "RUSTUP_TOOLCHAIN": "esp1"
   }
 }

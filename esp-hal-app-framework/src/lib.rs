@@ -3,7 +3,6 @@
 #![feature(type_alias_impl_trait)]
 #![feature(trait_alias)]
 #![feature(impl_trait_in_assoc_type)]
-#![feature(async_closure)]
 #![no_main]
 #![feature(associated_type_defaults)]
 

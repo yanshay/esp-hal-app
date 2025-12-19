@@ -594,21 +594,6 @@ struct DisplayConfigDTO {
 }
 encrypted_input!(DisplayConfigDTO);
 
-#[derive(serde::Deserialize, serde::Serialize)]
-struct PrinterConfigDTO {
-    ip: String,
-    // name: String,
-    serial: String,
-    access_code: String,
-}
-encrypted_input!(PrinterConfigDTO);
-
-#[derive(serde::Deserialize, serde::Serialize)]
-struct TagConfigDTO {
-    tag_scan_timeout: u64,
-}
-encrypted_input!(TagConfigDTO);
-
 #[derive(serde::Serialize)]
 pub struct SetConfigResponseDTO {
     pub error_text: Option<String>,
