@@ -423,8 +423,7 @@ pub async fn run_ota(
                         );
                         Timer::after_millis(1000).await;
                     }
-                    esp_hal::reset::software_reset();
-                    break;
+                    esp_hal::system::software_reset();
                 }
                 Err(e) => {
                     report(Report::Failure, &format!("Flashing error: {e:?}"));

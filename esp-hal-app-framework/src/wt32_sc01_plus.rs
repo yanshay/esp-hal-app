@@ -7,12 +7,14 @@ use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::{
     dma::DmaTxBuf,
     dma_buffers,
-    gpio::{GpioPin, Input, Level, Output, Pull},
-    lcd_cam::lcd::i8080::I8080Transfer,
-    ledc::{channel::ChannelIFace, timer::TimerIFace, LowSpeed},
+    gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
+    lcd_cam::{
+        LcdCam, lcd::i8080::I8080Transfer
+    },
+    ledc::{LowSpeed, channel::ChannelIFace, timer::TimerIFace},
     peripherals::LCD_CAM,
     spi::{self, master::Spi},
-    time::RateExtU32,
+    time::Rate,
 };
 use mipidsi::models::ST7796;
 use slint::platform::{software_renderer::Rgb565Pixel, update_timers_and_animations, WindowEvent};
@@ -158,7 +160,7 @@ pub async fn event_loop<I2C: embedded_hal::i2c::I2c>(
                         .configure(esp_hal::ledc::channel::config::Config {
                             timer: lstimer0,
                             duty_pct: 100,
-                            pin_config: esp_hal::ledc::channel::config::PinConfig::PushPull,
+                            drive_mode: esp_hal::gpio::DriveMode::PushPull,
                         })
                         .unwrap();
                     display_fully_dimmed = false;
@@ -219,7 +221,7 @@ pub async fn event_loop<I2C: embedded_hal::i2c::I2c>(
                         .configure(esp_hal::ledc::channel::config::Config {
                             timer: lstimer0,
                             duty_pct: 0,
-                            pin_config: esp_hal::ledc::channel::config::PinConfig::PushPull,
+                            drive_mode: esp_hal::gpio::DriveMode::PushPull,
                         })
                         .unwrap();
                     if !display_fully_dimmed {
@@ -235,7 +237,7 @@ pub async fn event_loop<I2C: embedded_hal::i2c::I2c>(
                         .configure(esp_hal::ledc::channel::config::Config {
                             timer: lstimer0,
                             duty_pct: framework.display_dimming_percent,
-                            pin_config: esp_hal::ledc::channel::config::PinConfig::PushPull,
+                            drive_mode: esp_hal::gpio::DriveMode::PushPull,
                         })
                         .unwrap();
                     display_partially_dimmed = true;
@@ -266,7 +268,9 @@ impl slint::platform::Platform for EspBackend {
         Ok(self.window.clone())
     }
     fn duration_since_start(&self) -> core::time::Duration {
-        core::time::Duration::from_micros(esp_hal::time::now().ticks())
+        let now = esp_hal::time::Instant::now();
+        let duration = now.duration_since_epoch();
+        core::time::Duration::from_micros(duration.as_micros())
     }
     fn debug_log(&self, arguments: core::fmt::Arguments) {
         debug!("{}", arguments);
@@ -398,26 +402,26 @@ async fn stats_task() {
 #[allow(non_snake_case)]
 pub struct WT32SC01PlusDisplayPeripherals<CHLCD, P>
 where
-    CHLCD: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
-    P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
+    CHLCD: esp_hal::dma::TxChannelFor<LCD_CAM<'static>> + 'static,
+    P: esp_hal::i2c::master::Instance + 'static,
 {
-    pub GPIO47: GpioPin<47>,
-    pub GPIO0: GpioPin<0>,
-    pub GPIO45: GpioPin<45>,
-    pub GPIO4: GpioPin<4>,
-    pub LCD_CAM: LCD_CAM,
-    pub GPIO9: GpioPin<9>,
-    pub GPIO46: GpioPin<46>,
-    pub GPIO3: GpioPin<3>,
-    pub GPIO8: GpioPin<8>,
-    pub GPIO18: GpioPin<18>,
-    pub GPIO17: GpioPin<17>,
-    pub GPIO16: GpioPin<16>,
-    pub GPIO15: GpioPin<15>,
-    pub LEDC: esp_hal::peripherals::LEDC,
-    pub GPIO5: GpioPin<5>,
-    pub GPIO6: GpioPin<6>,
-    pub GPIO7: GpioPin<7>,
+    pub GPIO47: esp_hal::peripherals::GPIO47<'static>,
+    pub GPIO0: esp_hal::peripherals::GPIO0<'static>,
+    pub GPIO45: esp_hal::peripherals::GPIO45<'static>,
+    pub GPIO4: esp_hal::peripherals::GPIO4<'static>,
+    pub LCD_CAM: LCD_CAM<'static>,
+    pub GPIO9: esp_hal::peripherals::GPIO9<'static>,
+    pub GPIO46: esp_hal::peripherals::GPIO46<'static>,
+    pub GPIO3: esp_hal::peripherals::GPIO3<'static>,
+    pub GPIO8: esp_hal::peripherals::GPIO8<'static>,
+    pub GPIO18: esp_hal::peripherals::GPIO18<'static>,
+    pub GPIO17: esp_hal::peripherals::GPIO17<'static>,
+    pub GPIO16: esp_hal::peripherals::GPIO16<'static>,
+    pub GPIO15: esp_hal::peripherals::GPIO15<'static>,
+    pub LEDC: esp_hal::peripherals::LEDC<'static>,
+    pub GPIO5: esp_hal::peripherals::GPIO5<'static>,
+    pub GPIO6: esp_hal::peripherals::GPIO6<'static>,
+    pub GPIO7: esp_hal::peripherals::GPIO7<'static>,
     pub DMA_CHx: CHLCD,
     pub I2Cx: P,
 }
@@ -425,13 +429,13 @@ where
 #[allow(non_snake_case)]
 pub struct WT32SC01PlusSDCardPeripherals<S, CHSD>
 where
-    S: esp_hal::peripheral::Peripheral<P: esp_hal::spi::master::Instance> + 'static,
-    CHSD: esp_hal::dma::DmaChannelFor<spi::AnySpi>,
+    S: esp_hal::spi::master::Instance + 'static,
+    CHSD: esp_hal::dma::DmaChannelFor<spi::master::AnySpi<'static>>,
 {
-    pub GPIO38: GpioPin<38>,
-    pub GPIO39: GpioPin<39>,
-    pub GPIO40: GpioPin<40>,
-    pub GPIO41: GpioPin<41>,
+    pub GPIO38: esp_hal::peripherals::GPIO38<'static>,
+    pub GPIO39: esp_hal::peripherals::GPIO39<'static>,
+    pub GPIO40: esp_hal::peripherals::GPIO40<'static>,
+    pub GPIO41: esp_hal::peripherals::GPIO41<'static>,
     pub SPIx: S,
     pub DMA_CHx: CHSD,
 }
@@ -457,16 +461,16 @@ impl WT32SC01Plus {
 
         // DMA Version
         ExclusiveDevice<
-            esp_hal::spi::master::SpiDmaBus<'a, esp_hal::Async>,
+            esp_hal::spi::master::SpiDmaBus<'static, esp_hal::Async>,
             esp_hal::gpio::Output<'a>,
             embedded_hal_bus::spi::NoDelay,
         >,
     )
     where
-        CHLCD: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
-        P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
-        S: esp_hal::peripheral::Peripheral<P: esp_hal::spi::master::Instance> + 'static,
-        CHSD: esp_hal::dma::DmaChannelFor<spi::AnySpi> +'a,
+        CHLCD: esp_hal::dma::TxChannelFor<LCD_CAM<'static>> + 'static,
+        P: esp_hal::i2c::master::Instance + 'static,
+        S: esp_hal::spi::master::Instance + 'static,
+        CHSD: esp_hal::dma::DmaChannelFor<spi::master::AnySpi<'static>> + 'a,
     {
         let init_done = mk_static!(InitDone, InitDone::new());
         let runner = WT32SC01PlusRunner {
@@ -477,7 +481,11 @@ impl WT32SC01Plus {
         };
         let me = Self { init_done };
 
-        let sd_cs = Output::new(sdcard_peripherals.GPIO41, Level::High);
+        let sd_cs = Output::new(
+            sdcard_peripherals.GPIO41,
+            Level::High,
+            OutputConfig::default(),
+        );
         let sd_sclk = sdcard_peripherals.GPIO39;
         let sd_miso = sdcard_peripherals.GPIO38;
         let sd_mosi = sdcard_peripherals.GPIO40;
@@ -531,7 +539,7 @@ impl WT32SC01Plus {
         let spi_bus = Spi::new(
             spix,
             spi::master::Config::default()
-                .with_frequency(20.MHz()) // 2 or 25.MHz()?
+                .with_frequency(Rate::from_mhz(20)) // 2 or 25.MHz()?
                 .with_mode(spi::Mode::_0),
         )
         .unwrap()
@@ -559,8 +567,8 @@ impl WT32SC01Plus {
 
 pub struct WT32SC01PlusRunner<C, P>
 where
-    C: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
-    P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
+    C: esp_hal::dma::TxChannelFor<LCD_CAM<'static>> + 'static,
+    P: esp_hal::i2c::master::Instance + 'static,
 {
     peripherals: Option<WT32SC01PlusDisplayPeripherals<C, P>>,
     display_orientation: mipidsi::options::Orientation,
@@ -570,18 +578,26 @@ where
 
 impl<C, P> WT32SC01PlusRunner<C, P>
 where
-    C: esp_hal::peripheral::Peripheral<P: esp_hal::dma::TxChannelFor<LCD_CAM>> + 'static,
-    P: esp_hal::peripheral::Peripheral<P: esp_hal::i2c::master::Instance> + 'static,
+    C: esp_hal::dma::TxChannelFor<LCD_CAM<'static>> + 'static,
+    P: esp_hal::i2c::master::Instance + 'static,
 {
     pub async fn run(&mut self) {
         let mut peripherals = self.peripherals.take().unwrap();
 
         // == Setup Display Interface (di) ================================================
 
-        let di_wr = Output::new(&mut peripherals.GPIO47, Level::High);
-        let di_dc = Output::new(&mut peripherals.GPIO0, Level::High);
+        let di_wr = Output::new(
+            peripherals.GPIO47.reborrow(),
+            Level::High,
+            OutputConfig::default(),
+        );
+        let di_dc = Output::new(
+            peripherals.GPIO0.reborrow(),
+            Level::High,
+            OutputConfig::default(),
+        );
         let di_bl = peripherals.GPIO45;
-        let di_rst = Output::new(peripherals.GPIO4, Level::High);
+        let di_rst = Output::new(peripherals.GPIO4, Level::High, OutputConfig::default());
 
         let fastbus = SC01DislpayOutputBus::new();
         let di = display_interface_parallel_gpio::PGPIO8BitInterface::new(fastbus, di_dc, di_wr);
@@ -602,35 +618,31 @@ where
 
         // Display initialization is done, now switch to LCD_CAM/DMA for driving data fast to the display
 
-        let lcd_cam = esp_hal::lcd_cam::LcdCam::new(peripherals.LCD_CAM);
-
-        let tx_pins = esp_hal::lcd_cam::lcd::i8080::TxEightBits::new(
-            peripherals.GPIO9,
-            peripherals.GPIO46,
-            peripherals.GPIO3,
-            peripherals.GPIO8,
-            peripherals.GPIO18,
-            peripherals.GPIO17,
-            peripherals.GPIO16,
-            peripherals.GPIO15,
-        );
+        let lcd_cam = LcdCam::new(peripherals.LCD_CAM);
 
         let di_wr = peripherals.GPIO47;
         let di_dc = peripherals.GPIO0;
 
-        let i8080_config = esp_hal::lcd_cam::lcd::i8080::Config {
-            frequency: 40.MHz(),
-            ..Default::default()
-        };
+        let i8080_config =
+            esp_hal::lcd_cam::lcd::i8080::Config::default().with_frequency(Rate::from_mhz(40));
 
         let mut i8080 = esp_hal::lcd_cam::lcd::i8080::I8080::new(
             lcd_cam.lcd,
             peripherals.DMA_CHx,
-            tx_pins,
             i8080_config,
         )
         .unwrap()
-        .with_ctrl_pins(di_dc, di_wr);
+        .with_dc(di_dc)
+        .with_wrx(di_wr)
+        .with_data0(peripherals.GPIO9)
+        .with_data1(peripherals.GPIO46)
+        .with_data2(peripherals.GPIO3)
+        .with_data3(peripherals.GPIO8)
+        .with_data4(peripherals.GPIO18)
+        .with_data5(peripherals.GPIO17)
+        .with_data6(peripherals.GPIO16)
+        .with_data7(peripherals.GPIO15);
+
         i8080.set_8bits_order(esp_hal::lcd_cam::ByteOrder::Inverted);
 
         let (_, _, tx_buffer0, tx_descriptors0) = dma_buffers!(
@@ -672,7 +684,7 @@ where
             .configure(esp_hal::ledc::timer::config::Config {
                 duty: esp_hal::ledc::timer::config::Duty::Duty5Bit,
                 clock_source: esp_hal::ledc::timer::LSClockSource::APBClk,
-                frequency: 24u32.kHz(),
+                frequency: Rate::from_khz(24),
             })
             .unwrap();
         let mut channel0 = ledc.channel(esp_hal::ledc::channel::Number::Channel0, di_bl);
@@ -681,7 +693,7 @@ where
 
         let ti_sda = peripherals.GPIO6; //.into_push_pull_output();
         let ti_scl = peripherals.GPIO5; //.into_push_pull_output();
-        let ti_irq = Input::new(peripherals.GPIO7, Pull::Down); //.into_push_pull_output();
+        let ti_irq = Input::new(peripherals.GPIO7, InputConfig::default().with_pull(Pull::Down)); //.into_push_pull_output();
 
         // TODO: Check the option of switching to async I2C instead of my own interrupt approach
         // let _ti_i2c = esp_hal::i2c::master::I2c::new(peripherals.I2C0, {
@@ -692,7 +704,7 @@ where
 
         let ti_i2c = esp_hal::i2c::master::I2c::new(
             peripherals.I2Cx,
-            esp_hal::i2c::master::Config::default().with_frequency(400.kHz()),
+            esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(400)),
         )
         .unwrap()
         .with_sda(ti_sda)
@@ -740,7 +752,7 @@ where
             .configure(esp_hal::ledc::channel::config::Config {
                 timer: lstimer0,
                 duty_pct: 100,
-                pin_config: esp_hal::ledc::channel::config::PinConfig::PushPull,
+                drive_mode: esp_hal::gpio::DriveMode::PushPull,
             })
             .unwrap();
 

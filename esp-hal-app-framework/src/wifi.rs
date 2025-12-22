@@ -4,16 +4,15 @@ use core::{
     str::FromStr as _,
 };
 
-use alloc::vec;
+use alloc::{string::String, vec};
 use alloc::{format, rc::Rc, vec::Vec};
 use edge_dhcp::io::{self, DEFAULT_SERVER_PORT};
 use edge_nal::UdpBind;
 use embassy_net::{Runner, Stack};
 use embassy_time::{with_timeout, Duration, Timer};
 use embedded_io_async::{Read as _, Write as _};
-use esp_wifi::wifi::{
-    AccessPointConfiguration, AccessPointInfo, Configuration, WifiApDevice, WifiDevice,
-    WifiStaDevice,
+use esp_radio::wifi::{
+    AccessPointConfig, AccessPointInfo, ClientConfig, ModeConfig, ScanConfig, WifiDevice,
 };
 
 // use deku::DekuContainerRead as _;
@@ -28,7 +27,7 @@ use super::{
 #[embassy_executor::task]
 #[allow(clippy::too_many_arguments)]
 pub async fn connection_task(
-    controller: esp_wifi::wifi::WifiController<'static>,
+    controller: esp_radio::wifi::WifiController<'static>,
     sta_stack: Stack<'static>,
     ap_stack: Stack<'static>,
     #[cfg(feature = "improv-jtag-serial")] rx: esp_hal::usb_serial_jtag::UsbSerialJtagRx<
@@ -48,7 +47,7 @@ pub async fn connection_task(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn connection_task_inner(
-    mut controller: esp_wifi::wifi::WifiController<'static>,
+    mut controller: esp_radio::wifi::WifiController<'static>,
     sta_stack: Stack<'static>,
     ap_stack: Stack<'static>,
     #[cfg(feature = "improv-jtag-serial")] mut rx: esp_hal::usb_serial_jtag::UsbSerialJtagRx<
@@ -72,11 +71,15 @@ pub async fn connection_task_inner(
         "http"
     };
 
-    let spawner = embassy_executor::Spawner::for_current_executor().await;
+    let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
 
     let mut send_packet = async |packet: ImprovWifiPacket, flush: bool| {
         let data = packet.to_bytes().unwrap();
-        tx.write(&data).await.unwrap();
+        <esp_hal::usb_serial_jtag::UsbSerialJtagTx<
+            'static,
+            esp_hal::Async,
+        > as embedded_io_async::Write>::write(&mut tx, &data).await.unwrap();
+
         if flush {
             #[cfg(feature = "improv-jtag-serial")]
             tx.flush().await.unwrap();
@@ -94,31 +97,33 @@ pub async fn connection_task_inner(
 
     // ssid and password initialize either from configuration data received or if not received using improv wifi
     // only once these are availble will continue to actual wifi connectivity
-    let mut ssid = heapless::String::<32>::new();
-    let mut password = heapless::String::<64>::new();
+    let mut ssid = String::new();
+    let mut password = String::new();
     let mut improv_wifi_bootstrap = false;
     let mut ap_active;
     let mut credentials_available = false;
 
     if framework.borrow().wifi_ssid.is_some() {
-        ssid = heapless::String::<32>::from_str(framework.borrow().wifi_ssid.as_ref().unwrap())
+        ssid = String::from_str(framework.borrow().wifi_ssid.as_ref().unwrap())
             .unwrap_or_default();
         password =
-            heapless::String::<64>::from_str(framework.borrow().wifi_password.as_ref().unwrap())
+            String::from_str(framework.borrow().wifi_password.as_ref().unwrap())
                 .unwrap_or_default();
         credentials_available = true;
     }
 
     // Improv Wifi and AccessPoint
     if !credentials_available {
-        let client_config = Configuration::AccessPoint(AccessPointConfiguration {
-            ssid: app_cargo_pkg_name.try_into().unwrap(),
-            ..Default::default()
-        });
-        controller.set_configuration(&client_config).unwrap();
+        let client_config = ModeConfig::AccessPoint(
+            AccessPointConfig::default().with_ssid(app_cargo_pkg_name.into()),
+        );
+
+        controller.set_config(&client_config).unwrap();
         controller.start_async().await.unwrap();
         // spawner.spawn(crate::framework::wifi::ap_net_task(ap_runner)).ok();
-        spawner.spawn_heap(dhcp_server(ap_stack, framework.clone())).ok();
+        spawner
+            .spawn_heap(dhcp_server(ap_stack, framework.clone()))
+            .ok();
         if framework.borrow().settings.web_server_captive {
             spawner
                 .spawn_heap(captive_portal(ap_stack, framework.clone()))
@@ -228,21 +233,14 @@ pub async fn connection_task_inner(
                                         data: RPCCommand::RequestScannedWifiNetworks,
                                         ..
                                     }) => {
-                                        let cfg = esp_wifi::wifi::ScanConfig {
-                                            ssid: None,
-                                            bssid: None,
-                                            channel: None,
-                                            show_hidden: false,
-                                            scan_type: esp_wifi::wifi::ScanTypeConfig::default(),
-                                        };
+                                        let cfg = ScanConfig::default().with_max(50);
                                         info!("Scanning for available WiFi networks");
                                         let scan_res =
-                                            controller.scan_with_config_async::<50>(cfg).await;
+                                            controller.scan_with_config_async(cfg).await;
 
                                         if let Ok(scan_results) = scan_res {
                                             let mut seen = hashbrown::HashSet::new();
                                             let unique_aps: Vec<AccessPointInfo> = scan_results
-                                                .0
                                                 .into_iter()
                                                 .filter(|item| seen.insert(item.ssid.clone()))
                                                 .collect();
@@ -287,36 +285,25 @@ pub async fn connection_task_inner(
                                             let _ = controller.stop_async().await;
                                             ap_active = false;
                                         }
-                                        let client_config = esp_wifi::wifi::Configuration::Client(
-                                            esp_wifi::wifi::ClientConfiguration {
-                                                ssid: heapless::String::<32>::from_str(
-                                                    <&str>::from(&improv_ssid),
-                                                )
-                                                .unwrap(),
-                                                password: heapless::String::<64>::from_str(
-                                                    <&str>::from(&improv_password),
-                                                )
-                                                .unwrap(),
-                                                ..Default::default()
-                                            },
+                                        let client_config = ModeConfig::Client(
+                                            ClientConfig::default()
+                                                .with_ssid(improv_ssid.clone())
+                                                .with_password(improv_password.clone()),
                                         );
                                         term_info!(
                                             "ImprovWiFi: Credentials check - WiFi '{}'",
                                             <&str>::from(&improv_ssid)
                                         );
-                                        controller.set_configuration(&client_config).unwrap();
+                                        controller.set_config(&client_config).unwrap();
                                         let _ = controller.start_async().await;
                                         let connect_res = controller.connect_async().await;
                                         let _ = controller.stop_async().await;
                                         if connect_res.is_ok() {
-                                            ssid = heapless::String::<32>::from_str(<&str>::from(
+                                            ssid = String::from_str(<&str>::from(
                                                 &improv_ssid,
                                             ))
                                             .unwrap();
-                                            password = heapless::String::<64>::from_str(
-                                                <&str>::from(&improv_password),
-                                            )
-                                            .unwrap();
+                                            password = improv_password.clone();
                                             term_info!("ImprovWifi: Credentials Ok");
                                             break 'improv_loop;
                                         } else {
@@ -387,8 +374,8 @@ pub async fn connection_task_inner(
         //       wifi_state() is always Invalid.
         //       and this loop is always 'stuck' in the connect_async() when connected.
         //       https://github.com/esp-rs/esp-hal/discussions/4261
-        match esp_wifi::wifi::wifi_state() {
-            esp_wifi::wifi::WifiState::StaConnected => {
+        match esp_radio::wifi::sta_state() {
+            esp_radio::wifi::WifiStaState::Connected => {
                 // wait until we're no longer connected
                 // controller.wait_for_event(esp_wifi::wifi::WifiEvent::StaDisconnected).await;
                 loop {
@@ -413,13 +400,12 @@ pub async fn connection_task_inner(
         }
 
         if !matches!(controller.is_started(), Ok(true)) {
-            let client_config =
-                esp_wifi::wifi::Configuration::Client(esp_wifi::wifi::ClientConfiguration {
-                    ssid: ssid.clone(),
-                    password: password.clone(),
-                    ..Default::default()
-                });
-            controller.set_configuration(&client_config).unwrap();
+            let client_config = ModeConfig::Client(
+                ClientConfig::default()
+                    .with_ssid(ssid.clone())
+                    .with_password(password.clone()),
+            );
+            controller.set_config(&client_config).unwrap();
             trace!("Starting wifi");
             controller.start_async().await.unwrap();
             trace!("Wifi started!");
@@ -556,12 +542,14 @@ async fn captive_portal(stack: Stack<'static>, framework: Rc<RefCell<Framework>>
     .unwrap();
 }
 
+// async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
 #[embassy_executor::task]
-pub async fn sta_net_task(mut runner: Runner<'static, WifiDevice<'static, WifiStaDevice>>) {
+pub async fn sta_net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
+    // pub async fn sta_net_task(mut runner: Runner<'static, WifiDevice<'static>) {
     runner.run().await
 }
 
 #[embassy_executor::task]
-pub async fn ap_net_task(mut runner: Runner<'static, WifiDevice<'static, WifiApDevice>>) {
+pub async fn ap_net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
 }

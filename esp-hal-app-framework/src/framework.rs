@@ -20,7 +20,7 @@ use embassy_sync::{
 use embassy_time::Timer;
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use esp_hal::{
-    gpio::{AnyPin, Input, Output, Pull},
+    gpio::{AnyPin, Input, InputConfig, Output, Pull},
     spi::master::Spi,
 };
 use esp_mbedtls::TlsReference;
@@ -207,7 +207,7 @@ impl Framework {
         spawner: Spawner,
         stack: Stack<'static>,
         tls: TlsReference<'static>,
-        erase_wifi_key_settings_and_restart_gpio: Option<AnyPin>,
+        mut erase_wifi_key_settings_and_restart_gpio: Option<AnyPin<'static>>,
     ) -> Rc<RefCell<Self>> {
         Terminal::initialize();
 
@@ -247,7 +247,7 @@ impl Framework {
         };
         let framework = Rc::new(RefCell::new(framework));
 
-        if let Some(gpio) = erase_wifi_key_settings_and_restart_gpio {
+        if let Some(gpio) = erase_wifi_key_settings_and_restart_gpio.take() {
             spawner
                 .spawn(button_erase_wifi_key_and_restart_handler(
                     gpio,
@@ -533,7 +533,7 @@ impl Framework {
 
     // General
     pub fn reset_device(&self) {
-        esp_hal::reset::software_reset();
+        esp_hal::system::software_reset();
     }
 
     // Fixed Security Key
@@ -844,11 +844,11 @@ pub trait FrameworkObserver {
 
 #[embassy_executor::task]
 pub async fn button_erase_wifi_key_and_restart_handler(
-    boot_gpio: AnyPin,
+    boot_gpio: AnyPin<'static>,
     framework: Rc<RefCell<Framework>>,
 ) {
     info!("Boot button handler to reset wifi & security key settings installed");
-    let mut boot_pin = Input::new(boot_gpio, Pull::None);
+    let mut boot_pin = Input::new(boot_gpio, InputConfig::default().with_pull(Pull::None));
     loop {
         boot_pin.wait_for_low().await;
         boot_pin.wait_for_high().await;

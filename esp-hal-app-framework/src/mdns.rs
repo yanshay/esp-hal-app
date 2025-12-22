@@ -20,7 +20,8 @@ pub async fn mdns_task(framework: Rc<RefCell<Framework>>) {
     );
     let udp_buffers: Box<edge_nal_embassy::UdpBuffers<1, 512, 512, 1>> =
         Box::new(edge_nal_embassy::UdpBuffers::new());
-    let udp = edge_nal_embassy::Udp::new(stack, &udp_buffers);
+
+    let udp = edge_nal_embassy::Udp::new(stack, &*udp_buffers);
     let mut socket =
         edge_mdns::io::bind(&udp, DEFAULT_SOCKET, Some(Ipv4Addr::UNSPECIFIED), Some(0))
             .await
