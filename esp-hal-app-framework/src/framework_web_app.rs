@@ -567,6 +567,29 @@ macro_rules! encrypted_input {
     };
 }
 
+#[macro_export]
+macro_rules! not_encrypted_input {
+    ($type:ident) => {
+        impl<'r, MoreState> FromRequest<'r, WebAppState<MoreState>> for $type {
+            type Rejection = EncryptedRejection;
+
+            async fn from_request<R: Read>(
+                state: &'r WebAppState<MoreState>,
+                _request_parts: RequestParts<'r>,
+                request_body: RequestBody<'r, R>,
+            ) -> Result<Self, Self::Rejection> {
+                let raw_input = request_body
+                    .read_all()
+                    .await
+                    .map_err(|_| EncryptedRejection::IoError)?;
+
+                (serde_json::from_slice(&raw_input) as Result<$type, _>)
+                    .map_err(|e| EncryptedRejection::DeserializationError(e))
+            }
+        }
+    };
+}
+
 #[derive(serde::Deserialize, serde::Serialize)]
 struct WifiConfigDTO {
     ssid: String,
