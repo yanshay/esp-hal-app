@@ -315,9 +315,9 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
     state: &GenericAppState,
 ) -> ! {
     let port = web_server_config.port;
-    let mut tcp_rx_buffer = Box::new([0u8; 1024]);
-    let mut tcp_tx_buffer = Box::new([0u8; 1024]);
-    let mut http_buffer = Box::new([0u8; 4096]);
+    let mut tcp_rx_buffer = Box::new([0u8; 2048]);
+    let mut tcp_tx_buffer = Box::new([0u8; 2048]);
+    let mut http_buffer = Box::new([0u8; 1024*16]);
 
     loop {
         let mut socket =
