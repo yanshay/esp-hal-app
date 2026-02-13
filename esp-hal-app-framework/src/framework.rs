@@ -268,8 +268,8 @@ impl Framework {
                 .fetch(String::from(WIFI_CONFIG_KEY)),
         ) {
             if let Ok(wifi_config) = serde_json::from_str::<WifiConfig>(&wifi_store) {
-                self.wifi_ssid = wifi_config.ssid;
-                self.wifi_password = wifi_config.password;
+                self.wifi_ssid = wifi_config.ssid.filter(|s| !s.is_empty());
+                self.wifi_password = wifi_config.password.filter(|s| !s.is_empty());
             }
         }
 
@@ -338,10 +338,10 @@ impl Framework {
                 let expanded_key = format!("{}_{}", &section, &key);
                 match expanded_key.as_str() {
                     "wifi_ssid" => {
-                        self.wifi_ssid = Some(String::from(value));
+                        self.wifi_ssid = (!value.is_empty()).then(|| value.to_string());
                         term_info!("Loaded WiFi credentials from SDCard (overriding Flash)");
                     }
-                    "wifi_password" => self.wifi_password = Some(String::from(value)),
+                    "wifi_password" => self.wifi_password = (!value.is_empty()).then(|| value.to_string()),
                     "fixed_key" => {
                         self.fixed_key = Some(String::from(value));
                     }
@@ -605,8 +605,8 @@ impl Framework {
         ssid: &str,
         password: &str,
     ) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
-        self.wifi_ssid = Some(String::from(ssid));
-        self.wifi_password = Some(String::from(password));
+        self.wifi_ssid = (!ssid.is_empty()).then(|| ssid.to_string());
+        self.wifi_password = (!password.is_empty()).then(|| password.to_string());
 
         let wifi_config = WifiConfig {
             ssid: Some(String::from(ssid)),
