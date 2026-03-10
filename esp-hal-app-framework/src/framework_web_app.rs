@@ -267,7 +267,7 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
                 move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>, body: String| {
                     ready(match ctr_decrypt(&key.borrow(), body.as_bytes()) {
                         Ok(_) => {
-                            framework.borrow_mut().reset_device();
+                            framework.borrow_mut().reset_device_safer(None);
                             (
                                 StatusCode::OK,
                                 SetConfigResponseDTO { error_text: None }
@@ -396,7 +396,7 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
             "/api/reset-device",
             post(
                 move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>, ResetDeviceDTO {}| {
-                    framework.borrow_mut().reset_device();
+                    framework.borrow_mut().reset_device_safer(None);
                     ready(SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()))
                 },
             ),

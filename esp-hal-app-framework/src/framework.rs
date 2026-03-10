@@ -17,7 +17,7 @@ use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     pubsub::{PubSubChannel, Publisher, Subscriber},
 };
-use embassy_time::Timer;
+use embassy_time::{Duration, Timer};
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use esp_hal::{
     gpio::{AnyPin, Input, InputConfig, Output, Pull},
@@ -532,8 +532,53 @@ impl Framework {
     }
 
     // General
-    pub fn reset_device(&self) {
+    pub fn reset_device_immediate(&self) {
         esp_hal::system::software_reset();
+    }
+
+    pub fn reset_device_safer(&self, timeout: Option<Duration>) {
+        #[cfg(feature = "wt32-sc01-plus")]
+        {
+            let framework = self.framework.as_ref().unwrap().clone();
+            self.spawner
+                .spawn_heap(async move {
+                    Framework::reset_device_safer_async(framework, timeout).await;
+                })
+                .ok();
+        }
+
+        #[cfg(not(feature = "wt32-sc01-plus"))]
+        {
+            let _ = timeout;
+            self.reset_device_immediate();
+        }
+    }
+
+    pub async fn reset_device_safer_async(framework: Rc<RefCell<Self>>, timeout: Option<Duration>) {
+        #[cfg(feature = "wt32-sc01-plus")]
+        {
+            let file_store = framework.borrow().inner_file_store.clone();
+            if let Some(file_store) = file_store {
+                if let Some(timeout) = timeout {
+                    info!("Safer device reset, waiting for file system pause");
+                    match embassy_time::with_timeout(timeout, file_store.lock()).await {
+                        Ok(_file_store_guard) => esp_hal::system::software_reset(),
+                        Err(_) => esp_hal::system::software_reset(),
+                    }
+                } else {
+                    let _file_store_guard = file_store.lock().await;
+                    esp_hal::system::software_reset();
+                }
+            } else {
+                esp_hal::system::software_reset();
+            }
+        }
+
+        #[cfg(not(feature = "wt32-sc01-plus"))]
+        {
+            let _ = (framework, timeout);
+            esp_hal::system::software_reset();
+        }
     }
 
     // Fixed Security Key
@@ -855,6 +900,6 @@ pub async fn button_erase_wifi_key_and_restart_handler(
         debug!("Boot Pin pressed");
         framework.borrow_mut().erase_stored_wifi_credentials();
         framework.borrow_mut().erase_stored_fixed_key();
-        framework.borrow().reset_device();
+        Framework::reset_device_safer_async(framework.clone(), None).await;
     }
 }
