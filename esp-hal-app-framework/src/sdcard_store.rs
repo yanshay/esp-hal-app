@@ -85,6 +85,17 @@ where
         full_path: String,
         source: FromUtf8Error,
     },
+    #[snafu(display(
+        "Rename '{top_folder_path}/{source_child}' -> '{top_folder_path}/{target_child}' failed: {reason} ({source})"
+    ))]
+    Rename {
+        top_folder_path: String,
+        source_child: String,
+        target_child: String,
+        reason: String,
+        #[snafu(source(from(embedded_sdmmc::asynchronous::Error<E>, DebugWrap)))]
+        source: DebugWrap<embedded_sdmmc::asynchronous::Error<E>>,
+    },
 }
 
 pub struct Clock;
@@ -658,5 +669,88 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
             full_path: path,
             part: "",
         })
+    }
+
+    pub async fn rename_entry_in_dir(
+        &mut self,
+        top_folder_path: &str,
+        source_child: &str,
+        target_child: &str,
+    ) -> Result<(), SDCardStoreError<SPI>> {
+        let volume0 = self.take_volume().await?.to_volume(&self.volume_mgr);
+
+        let res: Result<(), SDCardStoreError<SPI>> = async {
+            let mut dir = volume0.open_root_dir().context(OpenSnafu {
+                full_path: top_folder_path.to_string(),
+                part: "/",
+            })?;
+            let mut last_path_part = "";
+
+            let res: Result<(), SDCardStoreError<SPI>> = async {
+                let path_parts: Vec<&str> = top_folder_path.split(['/', '\\']).collect();
+                for path_part in path_parts.iter() {
+                    last_path_part = path_part;
+                    if path_part.is_empty() {
+                        continue;
+                    }
+                    if let Err(e) = dir.change_dir(*path_part).await {
+                        let reason = if matches!(e, embedded_sdmmc::asynchronous::Error::NotFound) {
+                            let mut msg = String::from("top not found: ");
+                            msg.push_str(path_part);
+                            msg
+                        } else {
+                            String::from("fs error")
+                        };
+                        return Err(RenameSnafu {
+                            top_folder_path: top_folder_path.to_string(),
+                            source_child: source_child.to_string(),
+                            target_child: target_child.to_string(),
+                            reason,
+                        }
+                        .into_error(e));
+                    }
+                }
+
+                if let Err(e) = dir.rename_entry_in_dir(source_child, target_child).await {
+                    let reason = match e {
+                        embedded_sdmmc::asynchronous::Error::NotFound => {
+                            String::from("source not found")
+                        }
+                        embedded_sdmmc::asynchronous::Error::FileAlreadyExists => {
+                            String::from("target exists (file)")
+                        }
+                        embedded_sdmmc::asynchronous::Error::DirAlreadyExists => {
+                            String::from("target exists (dir)")
+                        }
+                        embedded_sdmmc::asynchronous::Error::FilenameError(_) => {
+                            String::from("invalid name")
+                        }
+                        _ => String::from("fs error"),
+                    };
+                    return Err(RenameSnafu {
+                        top_folder_path: top_folder_path.to_string(),
+                        source_child: source_child.to_string(),
+                        target_child: target_child.to_string(),
+                        reason,
+                    }
+                    .into_error(e));
+                }
+
+                Ok(())
+            }
+            .await;
+
+            dir.close().context(CloseSnafu {
+                full_path: top_folder_path.to_string(),
+                part: last_path_part,
+            })?;
+
+            res
+        }
+        .await;
+
+        self.return_volume(volume0.to_raw_volume());
+
+        res
     }
 }
