@@ -4,12 +4,14 @@ use core::{
     str::FromStr as _,
 };
 
+use alloc::vec::Vec;
+use alloc::{format, rc::Rc};
 use alloc::{string::String, vec};
-use alloc::{format, rc::Rc, vec::Vec};
 use edge_dhcp::io::{self, DEFAULT_SERVER_PORT};
 use edge_nal::UdpBind;
 use embassy_net::{Runner, Stack};
-use embassy_time::{with_timeout, Duration, Timer};
+use embassy_time::with_timeout;
+use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read as _, Write as _};
 use esp_radio::wifi::{
     AccessPointConfig, AccessPointInfo, ClientConfig, ModeConfig, ScanConfig, WifiDevice,
@@ -19,10 +21,8 @@ use esp_radio::wifi::{
 
 use crate::utils::SpawnerHeapExt;
 
-use super::{
-    framework::{Framework, WebConfigMode},
-    improv_wifi::*,
-};
+use super::framework::{Framework, WebConfigMode};
+use super::improv_wifi::*;
 
 #[embassy_executor::task]
 #[allow(clippy::too_many_arguments)]
@@ -42,7 +42,15 @@ pub async fn connection_task(
     #[cfg(feature = "improv-uart")] mut tx: esp_hal::uart::UartTx<'static, esp_hal::Async>,
     framework: Rc<RefCell<Framework>>,
 ) {
-    connection_task_inner(controller, sta_stack, ap_stack, rx, tx, framework).await
+    #[cfg(any(feature = "improv-jtag-serial", feature = "improv-uart"))]
+    {
+        connection_task_inner(controller, sta_stack, ap_stack, rx, tx, framework).await;
+    }
+
+    #[cfg(not(any(feature = "improv-jtag-serial", feature = "improv-uart")))]
+    {
+        connection_task_inner(controller, sta_stack, ap_stack, framework).await;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -73,12 +81,12 @@ pub async fn connection_task_inner(
 
     let spawner = unsafe { embassy_executor::Spawner::for_current_executor().await };
 
+    #[cfg(any(feature = "improv-jtag-serial", feature = "improv-uart"))]
     let mut send_packet = async |packet: ImprovWifiPacket, flush: bool| {
         let data = packet.to_bytes().unwrap();
-        <esp_hal::usb_serial_jtag::UsbSerialJtagTx<
-            'static,
-            esp_hal::Async,
-        > as embedded_io_async::Write>::write(&mut tx, &data).await.unwrap();
+        <_ as embedded_io_async::Write>::write(&mut tx, &data)
+            .await
+            .unwrap();
 
         if flush {
             #[cfg(feature = "improv-jtag-serial")]
@@ -86,9 +94,6 @@ pub async fn connection_task_inner(
             #[cfg(feature = "improv-uart")]
             tx.flush_async().await.unwrap();
         }
-        // embedded_io_async usage if needed:
-        // embedded_io_async::Write::write(&mut tx, &data).await.unwrap();
-        // embedded_io_async::Write::flush(&mut tx).await.unwrap();
     };
 
     trace!("Connection task started");
@@ -104,11 +109,9 @@ pub async fn connection_task_inner(
     let mut credentials_available = false;
 
     if framework.borrow().wifi_ssid.is_some() {
-        ssid = String::from_str(framework.borrow().wifi_ssid.as_ref().unwrap())
+        ssid = String::from_str(framework.borrow().wifi_ssid.as_ref().unwrap()).unwrap_or_default();
+        password = String::from_str(framework.borrow().wifi_password.as_ref().unwrap())
             .unwrap_or_default();
-        password =
-            String::from_str(framework.borrow().wifi_password.as_ref().unwrap())
-                .unwrap_or_default();
         credentials_available = true;
     }
 
@@ -169,174 +172,176 @@ pub async fn connection_task_inner(
         //     embedded_io_async::Write::flush(tx).await.unwrap();
         // }
 
-        // When using esp-flash web installer we miss the request for status that comes right after
-        //   installation completes, therefore we send status w/o being asked.
-        // Also, if we send too early, data doesn't arrive properly, therefore the wait before.
-        // If there is no one on the other side of the serial this will hang, but it doesn't matter much,
-        //   since if there's no one on the other side no point in this anyway, but need to be aware of that
-        //   in case of future code changes
-        // Howevere, some edge cases were seen where I suspect were caused by this code hanging, so I added a timeout.
+        #[cfg(any(feature = "improv-jtag-serial", feature = "improv-uart"))]
+        {
+            // When using esp-flash web installer we miss the request for status that comes right after
+            //   installation completes, therefore we send status w/o being asked.
+            // Also, if we send too early, data doesn't arrive properly, therefore the wait before.
+            // If there is no one on the other side of the serial this will hang, but it doesn't matter much,
+            //   since if there's no one on the other side no point in this anyway, but need to be aware of that
+            //   in case of future code changes
+            // Howevere, some edge cases were seen where I suspect were caused by this code hanging, so I added a timeout.
 
-        Timer::after(Duration::from_millis(2000)).await;
-        let response = ImprovWifiPacket::new_current_state(CurrentStateOption::Ready);
-        let _ = with_timeout(Duration::from_millis(1000), send_packet(response, false)).await;
+            Timer::after(Duration::from_millis(2000)).await;
+            let response = ImprovWifiPacket::new_current_state(CurrentStateOption::Ready);
+            let _ = with_timeout(Duration::from_millis(1000), send_packet(response, false)).await;
 
-        let mut buffer = Vec::with_capacity(100);
-        let mut temp_buf = [0u8; 40];
+            let mut buffer = Vec::with_capacity(100);
+            let mut temp_buf = [0u8; 40];
 
-        'improv_loop: loop {
-            let r = rx.read(&mut temp_buf).await;
+            'improv_loop: loop {
+                let r = rx.read(&mut temp_buf).await;
 
-            match r {
-                Ok(len) => {
-                    if len == 0 {
-                        // need to display something to use and exit,
-                        // no point continuing to wifi section
-                        return;
-                    } // Append the new data to our growing buffer
+                match r {
+                    Ok(len) => {
+                        if len == 0 {
+                            // need to display something to use and exit,
+                            // no point continuing to wifi section
+                            return;
+                        } // Append the new data to our growing buffer
 
-                    buffer.extend_from_slice(&temp_buf[..len]);
+                        buffer.extend_from_slice(&temp_buf[..len]);
 
-                    // Try to parse packets from the buffer as long as data is available
-                    'process_data: while !buffer.is_empty() {
-                        // Attempt to parse a packet from the buffer
-                        match ImprovWifiPacket::from_bytes((buffer.as_ref(), 0)) {
-                            Ok((rest, packet)) => {
-                                // Update the buffer by removing the parsed data (do it now to save time after send later)
-                                let parsed_len = buffer.len() - rest.0.len();
-                                buffer.drain(..parsed_len);
-                                // Successfully parsed a packet
-                                match packet.data {
-                                    ImprovWifiPacketData::RPC(RPCCommandStruct {
-                                        data: RPCCommand::RequestCurrentState,
-                                        ..
-                                    }) => {
-                                        // TODO: check wifi state and respond accordingly
-                                        let response = ImprovWifiPacket::new_current_state(
-                                            CurrentStateOption::Ready,
-                                        );
-                                        send_packet(response, false).await;
-                                    }
-                                    ImprovWifiPacketData::RPC(RPCCommandStruct {
-                                        data: RPCCommand::RequestDeviceInformation,
-                                        ..
-                                    }) => {
-                                        let response = ImprovWifiPacket::new_rpc_result(RPCResultStruct::new_response_to_request_device_information(
+                        // Try to parse packets from the buffer as long as data is available
+                        'process_data: while !buffer.is_empty() {
+                            // Attempt to parse a packet from the buffer
+                            match ImprovWifiPacket::from_bytes((buffer.as_ref(), 0)) {
+                                Ok((rest, packet)) => {
+                                    // Update the buffer by removing the parsed data (do it now to save time after send later)
+                                    let parsed_len = buffer.len() - rest.0.len();
+                                    buffer.drain(..parsed_len);
+                                    // Successfully parsed a packet
+                                    match packet.data {
+                                        ImprovWifiPacketData::RPC(RPCCommandStruct {
+                                            data: RPCCommand::RequestCurrentState,
+                                            ..
+                                        }) => {
+                                            // TODO: check wifi state and respond accordingly
+                                            let response = ImprovWifiPacket::new_current_state(
+                                                CurrentStateOption::Ready,
+                                            );
+                                            send_packet(response, false).await;
+                                        }
+                                        ImprovWifiPacketData::RPC(RPCCommandStruct {
+                                            data: RPCCommand::RequestDeviceInformation,
+                                            ..
+                                        }) => {
+                                            let response = ImprovWifiPacket::new_rpc_result(RPCResultStruct::new_response_to_request_device_information(
                                             app_cargo_pkg_name,
                                             app_cargo_pkg_version,
                                             "ESP32S3",
                                             "WT32-SC01-Plus",
                                         ));
-                                        send_packet(response, false).await;
-                                    }
-                                    ImprovWifiPacketData::RPC(RPCCommandStruct {
-                                        data: RPCCommand::RequestScannedWifiNetworks,
-                                        ..
-                                    }) => {
-                                        let cfg = ScanConfig::default().with_max(50);
-                                        info!("Scanning for available WiFi networks");
-                                        let scan_res =
-                                            controller.scan_with_config_async(cfg).await;
+                                            send_packet(response, false).await;
+                                        }
+                                        ImprovWifiPacketData::RPC(RPCCommandStruct {
+                                            data: RPCCommand::RequestScannedWifiNetworks,
+                                            ..
+                                        }) => {
+                                            let cfg = ScanConfig::default().with_max(50);
+                                            info!("Scanning for available WiFi networks");
+                                            let scan_res =
+                                                controller.scan_with_config_async(cfg).await;
 
-                                        if let Ok(scan_results) = scan_res {
-                                            let mut seen = hashbrown::HashSet::new();
-                                            let unique_aps: Vec<AccessPointInfo> = scan_results
-                                                .into_iter()
-                                                .filter(|item| seen.insert(item.ssid.clone()))
-                                                .collect();
-                                            for ap_info in unique_aps {
-                                                let response =
+                                            if let Ok(scan_results) = scan_res {
+                                                let mut seen = hashbrown::HashSet::new();
+                                                let unique_aps: Vec<AccessPointInfo> = scan_results
+                                                    .into_iter()
+                                                    .filter(|item| seen.insert(item.ssid.clone()))
+                                                    .collect();
+                                                for ap_info in unique_aps {
+                                                    let response =
                                                     ImprovWifiPacket::new_rpc_result(RPCResultStruct::new_response_to_request_scanned_wifi_networks(
                                                         &ap_info.ssid,
                                                         &format!("{}", ap_info.signal_strength),
                                                         ap_info.auth_method.is_some(),
                                                     ));
-                                                send_packet(response, true).await;
+                                                    send_packet(response, true).await;
+                                                }
+                                            } else {
+                                                term_error!(
+                                                    "Error scanning wifi networks {:?}",
+                                                    scan_res
+                                                );
                                             }
-                                        } else {
-                                            term_error!(
-                                                "Error scanning wifi networks {:?}",
-                                                scan_res
-                                            );
-                                        }
-                                        let response =
+                                            let response =
                                             ImprovWifiPacket::new_rpc_result(RPCResultStruct::new_response_to_request_scanned_wifi_networks_end());
-                                        send_packet(response, true).await;
-                                    }
-
-                                    ImprovWifiPacketData::RPC(RPCCommandStruct {
-                                        data:
-                                            RPCCommand::SendWifiSettings(SendWifiSettingsStruct {
-                                                ssid: improv_ssid,
-                                                password: improv_password,
-                                            }),
-                                        ..
-                                    }) => {
-                                        let response = ImprovWifiPacket::new_current_state(
-                                            CurrentStateOption::Provisioning,
-                                        );
-                                        send_packet(response, true).await;
-                                        // If Acess Point is active stop it from now on,
-                                        // For now to activate back need to restart device
-                                        if ap_active {
-                                            term_info!("ImprovWiFi setup: Stopping Acess Point");
-                                            framework.borrow().stop_web_app(); // disable because it was started for Access Point mode configuration
-                                            let _ = controller.disconnect_async().await;
-                                            let _ = controller.stop_async().await;
-                                            ap_active = false;
+                                            send_packet(response, true).await;
                                         }
-                                        let client_config = ModeConfig::Client(
-                                            ClientConfig::default()
-                                                .with_ssid(improv_ssid.clone())
-                                                .with_password(improv_password.clone()),
-                                        );
-                                        term_info!(
-                                            "ImprovWiFi: Credentials check - WiFi '{}'",
-                                            <&str>::from(&improv_ssid)
-                                        );
-                                        controller.set_config(&client_config).unwrap();
-                                        let _ = controller.start_async().await;
-                                        let connect_res = controller.connect_async().await;
-                                        let _ = controller.stop_async().await;
-                                        if connect_res.is_ok() {
-                                            ssid = String::from_str(<&str>::from(
-                                                &improv_ssid,
-                                            ))
-                                            .unwrap();
-                                            password = improv_password.clone();
-                                            term_info!("ImprovWifi: Credentials Ok");
-                                            break 'improv_loop;
-                                        } else {
-                                            let response = ImprovWifiPacket::new_error_state(
-                                                ErrorStateOption::UnableToConnect,
+
+                                        ImprovWifiPacketData::RPC(RPCCommandStruct {
+                                            data:
+                                                RPCCommand::SendWifiSettings(SendWifiSettingsStruct {
+                                                    ssid: improv_ssid,
+                                                    password: improv_password,
+                                                }),
+                                            ..
+                                        }) => {
+                                            let response = ImprovWifiPacket::new_current_state(
+                                                CurrentStateOption::Provisioning,
                                             );
                                             send_packet(response, true).await;
-                                            term_info!("ImprovWiFi: Credentials incorrect");
+                                            // If Acess Point is active stop it from now on,
+                                            // For now to activate back need to restart device
+                                            if ap_active {
+                                                term_info!(
+                                                    "ImprovWiFi setup: Stopping Acess Point"
+                                                );
+                                                framework.borrow().stop_web_app(); // disable because it was started for Access Point mode configuration
+                                                let _ = controller.disconnect_async().await;
+                                                let _ = controller.stop_async().await;
+                                                ap_active = false;
+                                            }
+                                            let client_config = ModeConfig::Client(
+                                                ClientConfig::default()
+                                                    .with_ssid(improv_ssid.clone())
+                                                    .with_password(improv_password.clone()),
+                                            );
+                                            term_info!(
+                                                "ImprovWiFi: Credentials check - WiFi '{}'",
+                                                <&str>::from(&improv_ssid)
+                                            );
+                                            controller.set_config(&client_config).unwrap();
+                                            let _ = controller.start_async().await;
+                                            let connect_res = controller.connect_async().await;
+                                            let _ = controller.stop_async().await;
+                                            if connect_res.is_ok() {
+                                                ssid = String::from_str(<&str>::from(&improv_ssid))
+                                                    .unwrap();
+                                                password = improv_password.clone();
+                                                term_info!("ImprovWifi: Credentials Ok");
+                                                break 'improv_loop;
+                                            } else {
+                                                let response = ImprovWifiPacket::new_error_state(
+                                                    ErrorStateOption::UnableToConnect,
+                                                );
+                                                send_packet(response, true).await;
+                                                term_info!("ImprovWiFi: Credentials incorrect");
+                                            }
                                         }
+                                        _ => (),
                                     }
-                                    _ => (),
+
+                                    if buffer.is_empty() {
+                                        break 'process_data; // skips one empty iteration over no data to speed things up
+                                    }
                                 }
-
-                                if buffer.is_empty() {
-                                    break 'process_data; // skips one empty iteration over no data to speed things up
+                                Err(ParseError::Incomplete) => {
+                                    // debug!("Incomplete Deku data, will get more");
+                                    break 'process_data;
                                 }
-                            }
-                            Err(ParseError::Incomplete) => {
-                                // debug!("Incomplete Deku data, will get more");
-                                break 'process_data;
-                            }
-                            Err(_e) => {
-                                term_error!("recv_err: {:x?}", buffer);
-                                // let response = ImprovWifiPacket::new_error_state(ErrorStateOption::InvalidRPCPacket);
-                                // send_packet(response).await;
+                                Err(_e) => {
+                                    term_error!("recv_err: {:x?}", buffer);
+                                    // let response = ImprovWifiPacket::new_error_state(ErrorStateOption::InvalidRPCPacket);
+                                    // send_packet(response).await;
 
-                                // esp-web-tools doen't deal well with error messages.
-                                // usually errors take place at the beginning of interaction and a few bytes are missed when it wants to send RequestCurrentState
-                                // So let's send it, shouldn't hurt, and would probably help
+                                    // esp-web-tools doen't deal well with error messages.
+                                    // usually errors take place at the beginning of interaction and a few bytes are missed when it wants to send RequestCurrentState
+                                    // So let's send it, shouldn't hurt, and would probably help
 
-                                // check that byte before last, checksum is 0xe6
-                                if buffer.len() > 1 && buffer[buffer.len() - 2] == 0xe6 {
-                                    let response = ImprovWifiPacket::new_rpc_result(
+                                    // check that byte before last, checksum is 0xe6
+                                    if buffer.len() > 1 && buffer[buffer.len() - 2] == 0xe6 {
+                                        let response = ImprovWifiPacket::new_rpc_result(
                                         RPCResultStruct::new_response_to_request_device_information(
                                             app_cargo_pkg_name,
                                             app_cargo_pkg_version,
@@ -344,19 +349,20 @@ pub async fn connection_task_inner(
                                             "WT32-SC01-Plus",
                                         ),
                                     );
-                                    send_packet(response, false).await;
-                                }
-                                if let Some(pos) = buffer.iter().position(|&x| x == 10) {
-                                    buffer.drain(..=pos); // Remove everything up to and including the first 10
-                                } else {
-                                    buffer.clear(); // If no 10 is found, clear the vector
+                                        send_packet(response, false).await;
+                                    }
+                                    if let Some(pos) = buffer.iter().position(|&x| x == 10) {
+                                        buffer.drain(..=pos); // Remove everything up to and including the first 10
+                                    } else {
+                                        buffer.clear(); // If no 10 is found, clear the vector
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    term_error!("Error reading serial: {:?}", e);
+                    Err(e) => {
+                        term_error!("Error reading serial: {:?}", e);
+                    }
                 }
             }
         }
@@ -441,22 +447,34 @@ pub async fn connection_task_inner(
                                 .set_wifi_credentials(&ssid, &password); // need to be on separate line (due to borrowing)
                             match res {
                                 Ok(_) => {
-                                    let response = ImprovWifiPacket::new_current_state(
-                                        CurrentStateOption::Provisioned,
-                                    );
-                                    send_packet(response, true).await;
+                                    #[cfg(any(
+                                        feature = "improv-jtag-serial",
+                                        feature = "improv-uart"
+                                    ))]
+                                    {
+                                        let response = ImprovWifiPacket::new_current_state(
+                                            CurrentStateOption::Provisioned,
+                                        );
+                                        send_packet(response, true).await;
+                                    }
 
                                     framework
                                         .borrow_mut()
                                         .start_web_app(sta_stack, WebConfigMode::STA);
 
-                                    let response = ImprovWifiPacket::new_rpc_result(
-                                        RPCResultStruct::new_response_to_send_wifi_settings(
-                                            &format!("{prefix}://{}", config.address.address()),
-                                        ),
-                                    );
-                                    term_info!("Stored credentials in flash");
-                                    send_packet(response, true).await;
+                                    #[cfg(any(
+                                        feature = "improv-jtag-serial",
+                                        feature = "improv-uart"
+                                    ))]
+                                    {
+                                        let response = ImprovWifiPacket::new_rpc_result(
+                                            RPCResultStruct::new_response_to_send_wifi_settings(
+                                                &format!("{prefix}://{}", config.address.address()),
+                                            ),
+                                        );
+                                        term_info!("Stored credentials in flash");
+                                        send_packet(response, true).await;
+                                    }
                                 }
                                 Err(e) => {
                                     term_error!(format!("Error storing credentials in flash, WiFi initialization halted {e:?}"));

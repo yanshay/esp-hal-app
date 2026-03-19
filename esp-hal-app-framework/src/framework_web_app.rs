@@ -91,7 +91,6 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
     type PathRouter = impl PathRouter<WebAppState<MoreState>>;
 
     fn build_app(self) -> picoserve::Router<Self::PathRouter, Self::State> {
-
         let router = picoserve::Router::new();
         let router = router.nest(
             self.app_builder.path_description(),
@@ -170,7 +169,7 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
         let router = router.route(
             "/captive/api/wifi-config",
             post(
-                move |State(Encryption(key)): State<Encryption>, 
+                move |State(Encryption(key)): State<Encryption>,
                     State(FrameworkState(framework)): State<FrameworkState>,
                     body: String| {
                     ready(match ctr_decrypt(&key.borrow(), body.as_bytes()) {
@@ -264,7 +263,9 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
         let router = router.route(
             "/captive/api/reset-device",
             post(
-                move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>, body: String| {
+                move |State(Encryption(key)): State<Encryption>,
+                      State(FrameworkState(framework)): State<FrameworkState>,
+                      body: String| {
                     ready(match ctr_decrypt(&key.borrow(), body.as_bytes()) {
                         Ok(_) => {
                             framework.borrow_mut().reset_device_safer(None);
@@ -339,63 +340,69 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
                     )
                 },
             )
-            .get(move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>| {
-                ready(
-                    WifiConfigDTO {
-                        ssid: framework
-                            .borrow()
-                            .wifi_ssid
-                            .as_ref()
-                            .unwrap_or(&String::from(""))
-                            .clone(),
-                        password: framework
-                            .borrow()
-                            .wifi_password
-                            .as_ref()
-                            .unwrap_or(&String::from(""))
-                            .clone(),
-                    }
-                    .encrypt(&key.borrow()),
-                )
-            }),
+            .get(
+                move |State(Encryption(key)): State<Encryption>,
+                      State(FrameworkState(framework)): State<FrameworkState>| {
+                    ready(
+                        WifiConfigDTO {
+                            ssid: framework
+                                .borrow()
+                                .wifi_ssid
+                                .as_ref()
+                                .unwrap_or(&String::from(""))
+                                .clone(),
+                            password: framework
+                                .borrow()
+                                .wifi_password
+                                .as_ref()
+                                .unwrap_or(&String::from(""))
+                                .clone(),
+                        }
+                        .encrypt(&key.borrow()),
+                    )
+                },
+            ),
         );
 
         let router = router.route(
             "/api/device-name-config",
             post(
-                move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>, DeviceNameDTO { name }| {
-                    ready(
-                        match framework.borrow_mut().set_device_name(&name) {
-                            Ok(_) => {
-                                SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
-                            }
-                            Err(e) => SetConfigResponseDTO {
-                                error_text: Some(format!("{e:?}")),
-                            }
-                            .encrypt(&key.borrow()),
-                        },
-                    )
+                move |State(Encryption(key)): State<Encryption>,
+                      State(FrameworkState(framework)): State<FrameworkState>,
+                      DeviceNameDTO { name }| {
+                    ready(match framework.borrow_mut().set_device_name(&name) {
+                        Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
+                        Err(e) => SetConfigResponseDTO {
+                            error_text: Some(format!("{e:?}")),
+                        }
+                        .encrypt(&key.borrow()),
+                    })
                 },
             )
-            .get(move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>| {
-                ready(
-                    DeviceNameDTO {
-                        name: framework
-                            .borrow()
-                            .device_name
-                            .as_ref()
-                            .unwrap_or(&String::from(""))
-                            .clone(),
-                    }
-                    .encrypt(&key.borrow()),
-                )
-            }),
+            .get(
+                move |State(Encryption(key)): State<Encryption>,
+                      State(FrameworkState(framework)): State<FrameworkState>| {
+                    ready(
+                        DeviceNameDTO {
+                            name: framework
+                                .borrow()
+                                .device_name
+                                .as_ref()
+                                .unwrap_or(&String::from(""))
+                                .clone(),
+                        }
+                        .encrypt(&key.borrow()),
+                    )
+                },
+            ),
         );
 
         let router = router.route(
             "/api/reset-device",
             post(
-                move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>, ResetDeviceDTO {}| {
+                move |State(Encryption(key)): State<Encryption>,
+                      State(FrameworkState(framework)): State<FrameworkState>,
+                      ResetDeviceDTO {}| {
                     framework.borrow_mut().reset_device_safer(None);
                     ready(SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()))
                 },
@@ -429,17 +436,20 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
                     )
                 },
             )
-            .get(move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>| {
-                let framework = framework.borrow();
-                ready(
-                    DisplayConfigDTO {
-                        dimming_timeout: framework.display_dimming_timeout,
-                        dimming_percent: framework.display_dimming_percent,
-                        blackout_timeout: framework.display_blackout_timeout,
-                    }
-                    .encrypt(&key.borrow()),
-                )
-            }),
+            .get(
+                move |State(Encryption(key)): State<Encryption>,
+                      State(FrameworkState(framework)): State<FrameworkState>| {
+                    let framework = framework.borrow();
+                    ready(
+                        DisplayConfigDTO {
+                            dimming_timeout: framework.display_dimming_timeout,
+                            dimming_percent: framework.display_dimming_percent,
+                            blackout_timeout: framework.display_blackout_timeout,
+                        }
+                        .encrypt(&key.borrow()),
+                    )
+                },
+            ),
         );
 
         let router = router.route(
@@ -459,17 +469,13 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
                 move |State(Encryption(key)): State<Encryption>,
                       State(FrameworkState(framework)): State<FrameworkState>,
                       FixedKeyConfigDTO { key: fixed_key }| {
-                    ready(
-                        match framework.borrow_mut().set_fixed_key(&fixed_key) {
-                            Ok(_) => {
-                                SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
-                            }
-                            Err(e) => SetConfigResponseDTO {
-                                error_text: Some(format!("{e:?}")),
-                            }
-                            .encrypt(&key.borrow()),
-                        },
-                    )
+                    ready(match framework.borrow_mut().set_fixed_key(&fixed_key) {
+                        Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
+                        Err(e) => SetConfigResponseDTO {
+                            error_text: Some(format!("{e:?}")),
+                        }
+                        .encrypt(&key.borrow()),
+                    })
                 },
             ),
         );
@@ -477,7 +483,7 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
         let router = router.route(
             "/api/ota-request",
             post(
-                move |State(Encryption(key)): State<Encryption>, 
+                move |State(Encryption(key)): State<Encryption>,
                       State(FrameworkState(framework)): State<FrameworkState>,
                       OtaRequestDTO { request }| {
                     ready({
@@ -490,19 +496,22 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
 
         let router = router.route(
             "/api/ota-config",
-            get(move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>| {
-                let framework = framework.borrow();
-                ready(
-                    OtaStatusDTO {
-                        status: framework
-                            .ota_state
-                            .as_ref()
-                            .map_or(String::new(), |s| s.to_string()),
-                        curr_ver: framework.settings.app_cargo_pkg_version.to_string(),
-                    }
-                    .encrypt(&key.borrow()),
-                )
-            }),
+            get(
+                move |State(Encryption(key)): State<Encryption>,
+                      State(FrameworkState(framework)): State<FrameworkState>| {
+                    let framework = framework.borrow();
+                    ready(
+                        OtaStatusDTO {
+                            status: framework
+                                .ota_state
+                                .as_ref()
+                                .map_or(String::new(), |s| s.to_string()),
+                            curr_ver: framework.settings.app_cargo_pkg_version.to_string(),
+                        }
+                        .encrypt(&key.borrow()),
+                    )
+                },
+            ),
         );
 
         router
@@ -514,7 +523,7 @@ pub struct CustomNotFound {
 }
 
 impl<MoreState> picoserve::routing::PathRouterService<WebAppState<MoreState>> for CustomNotFound {
-    async fn call_request_handler_service<
+    async fn call_path_router_service<
         R: picoserve::io::Read,
         W: picoserve::response::ResponseWriter<Error = R::Error>,
     >(
@@ -687,7 +696,6 @@ pub fn encrypt_bytes(key_bytes: &[u8], data: &[u8]) -> String {
     );
 
     res
-
 }
 
 pub fn encrypt(key_bytes: &[u8], data: &str) -> String {

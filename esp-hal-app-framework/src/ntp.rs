@@ -9,6 +9,7 @@ use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_time::{Duration, Instant, Timer};
 use smoltcp::wire::DnsQueryType;
 use sntpc::{get_time, NtpContext, NtpTimestampGenerator};
+use sntpc_net_embassy::UdpSocketWrapper;
 
 use crate::prelude::Framework;
 
@@ -109,6 +110,7 @@ pub async fn ntp_task(framework: Rc<RefCell<Framework>>) {
                 &mut *tx_buffer,
             );
             socket.bind(123).unwrap();
+            let socket = UdpSocketWrapper::new(socket);
             let trials = 10;
             for trial in 0..trials {
                 info!("Issuing NTP query to {addr}");
@@ -127,7 +129,10 @@ pub async fn ntp_task(framework: Rc<RefCell<Framework>>) {
                             DateTime::from_timestamp(time.sec() as i64, 0).unwrap()
                         );
 
-                        term_info!("Received NTP Time : {}", DateTime::from_timestamp(time.sec() as i64, 0).unwrap());
+                        term_info!(
+                            "Received NTP Time : {}",
+                            DateTime::from_timestamp(time.sec() as i64, 0).unwrap()
+                        );
                         // info!("Complete NTP information: {:?}", time);
                         // Timer::after_secs(10).await;
                         // info!(">>>> After 5 seconds time is {:?}", Instant::now().to_date_time());
@@ -135,7 +140,7 @@ pub async fn ntp_task(framework: Rc<RefCell<Framework>>) {
                     }
                     Err(err) => {
                         error!("NTP error: {err:?}");
-                        if trial == trials-1 {
+                        if trial == trials - 1 {
                             term_error!("Failed to receive NTP time, retrying another server");
                         }
                         Timer::after_secs(1).await; // and continue the loop

@@ -1,5 +1,5 @@
-use core::cell::RefCell;
 use core::net::SocketAddr;
+use core::{cell::RefCell, ffi::CStr};
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -11,7 +11,7 @@ use embassy_net::IpAddress;
 use embassy_time::Timer;
 use embedded_io_async::Read;
 use esp_hal_ota::Ota;
-use esp_mbedtls::{Certificates, TlsVersion, X509};
+use esp_mbedtls::{Certificate, ClientSessionConfig, X509};
 use esp_storage::FlashStorage;
 use semver::Version;
 use serde::Deserialize;
@@ -179,23 +179,19 @@ pub async fn run_ota(
         return;
     }
 
-    let certificates = Certificates {
-        ca_chain: X509::pem(cert.as_bytes()).ok(),
-        ..Default::default()
+    let cert = CStr::from_bytes_with_nul(cert.as_bytes()).unwrap();
+    let servername = CString::new(ota_domain).unwrap();
+    let certificates = ClientSessionConfig {
+        ca_chain: Some(Certificate::new(X509::PEM(cert)).unwrap()),
+        server_name: Some(servername.as_c_str()),
+        ..ClientSessionConfig::new()
     };
 
     let mut tcp_buffers_boxed = Box::new(TcpBuffers::<1, 1024, 16384>::new());
     let tcp_buffers = &mut *tcp_buffers_boxed;
     let tcp = Tcp::new(stack, tcp_buffers);
 
-    let servername = CString::new(ota_domain).unwrap();
-    let tls_connector = Box::new(esp_mbedtls::asynch::TlsConnector::new(
-        tcp,
-        &servername,
-        TlsVersion::Tls1_2,
-        certificates,
-        tls,
-    ));
+    let tls_connector = Box::new(esp_mbedtls::TlsConnector::new(tls, tcp, &certificates));
 
     let IpAddress::Ipv4(addr) = ips[0] else {
         report(Report::Failure, "Unsupported reply from Dns");

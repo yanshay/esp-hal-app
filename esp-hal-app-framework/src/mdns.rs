@@ -1,11 +1,38 @@
-use core::{cell::RefCell, net::{Ipv4Addr, Ipv6Addr}};
+use core::{
+    cell::RefCell,
+    net::{Ipv4Addr, Ipv6Addr},
+};
 
 use alloc::{boxed::Box, rc::Rc};
 use edge_mdns::io::{Mdns, DEFAULT_SOCKET};
 use edge_nal::UdpSplit;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, signal::Signal};
+use rand_core::RngCore;
 
 use crate::prelude::Framework;
+
+#[derive(Clone, Copy, Default)]
+struct GetRandomRng;
+
+impl rand_core::CryptoRng for GetRandomRng {}
+
+impl RngCore for GetRandomRng {
+    fn next_u32(&mut self) -> u32 {
+        let mut buf = [0; 4];
+        self.fill_bytes(&mut buf);
+        u32::from_le_bytes(buf)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut buf = [0; 8];
+        self.fill_bytes(&mut buf);
+        u64::from_le_bytes(buf)
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        getrandom::getrandom(dest).unwrap();
+    }
+}
 
 // #[embassy_executor::task]
 pub async fn mdns_task(framework: Rc<RefCell<Framework>>) {
@@ -35,7 +62,7 @@ pub async fn mdns_task(framework: Rc<RefCell<Framework>>) {
         send,
         *recv_buf,
         *send_buf,
-        |buf| getrandom::getrandom(buf).unwrap(),
+        GetRandomRng,
         &signal,
     );
     let device_name = framework.borrow().device_name.as_ref().unwrap().clone();

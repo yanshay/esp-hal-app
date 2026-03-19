@@ -1,6 +1,6 @@
 [package]
 name = "esp-hal-app-framework"
-version = "0.6.4"
+version = "0.6.5"
 edition = "2021"
 rust-version = "1.84.0"
 description  = ""
@@ -8,14 +8,6 @@ keywords     = []
 categories   = ["embedded", "no-std"]
 repository   = "https://github.com/yanshay/esp-hal-app"
 license      = "MIT OR Apache-2.0"
-
-[patch.crates-io]
-edge-nal-embassy = { git = "https://github.com/yanshay/edge-net", branch = "yanshay_update-to-embassy-time-0.5.0"}
-edge-dhcp = { git = "https://github.com/yanshay/edge-net", branch = "yanshay_update-to-embassy-time-0.5.0"}
-edge-nal = { git = "https://github.com/yanshay/edge-net", branch = "yanshay_update-to-embassy-time-0.5.0"}
-edge-captive = { git = "https://github.com/yanshay/edge-net", branch = "yanshay_update-to-embassy-time-0.5.0"}
-edge-http = { git = "https://github.com/yanshay/edge-net", branch = "yanshay_update-to-embassy-time-0.5.0"}
-edge-mdns = { git = "https://github.com/yanshay/edge-net", branch = "yanshay_update-to-embassy-time-0.5.0"}
 
 [profile.release]
 codegen-units = 1
@@ -46,9 +38,8 @@ esp-println = { version = "0.16.0", default-features = false, features = ["criti
 esp-rtos = { version = "0.2.0", features = ["embassy", "esp-alloc", "esp-radio", "alloc"] }
 esp-radio = { version = "0.17.0", features = ["wifi", "esp-alloc"]}
 esp-partition-table = { version = "0.1.3" }
-esp-mbedtls = { git = "https://github.com/yanshay/esp-mbedtls.git", features = [ "async" ], branch="yanshay_esp-hal-1.0.0-with-session-reuse" }
-# esp-mbedtls = { path = "../../../../../OpenSourceProj/forked/esp-mbedtls/esp-mbedtls/", features = [ "async" ] }
-# esp-mbedtls = { git = "https://github.com/esp-rs/esp-mbedtls.git", features = [ "async" ], rev = "5eaa316b5d9a364534cbb6dd353a883e1e9c4716" } # https://github.com/esp-rs/esp-mbedtls/pull/96/commits
+esp-mbedtls = { package = "mbedtls-rs", path = "../../../../../OpenSourceProj/forked/mbedtls-rs/mbedtls-rs", features = [ "log" ] }
+esp-mbedtls-sys = { package = "mbedtls-rs-sys", path = "../../../../../OpenSourceProj/forked/mbedtls-rs/mbedtls-rs-sys" }
 esp-alloc = { version = "0.9.0" }
 esp-storage = { version = "0.4.0", features = ["nor-flash"] }
 
@@ -60,14 +51,14 @@ embedded-hal-async = { version = "1.0.0" }
 embedded-hal-bus = { version = "0.3.0", features = ["async"] }
 embedded-storage = { version = "0.3.1" }
 embedded-storage-async = { version = "0.4.1" }
-embedded-io = "0.6.1"
-embedded-io-async = { version = "0.6.1" }
+embedded-io = "0.7"
+embedded-io-async = { version = "0.7" }
 
 # Embassy & Async crates
 embassy-embedded-hal = { version = "0.5.0" }
 embassy-time = { version = "0.5.0", features = ["generic-queue-8"] }
 embassy-executor = { version = "0.9.0", features = ["nightly"] }
-embassy-net = { version = "0.7.1", features = [ "tcp", "udp", "dhcpv4", "medium-ethernet", "multicast" ] }
+embassy-net = { version = "0.8.0", features = [ "tcp", "udp", "dhcpv4", "dns", "medium-ethernet", "multicast" ] }
 embassy-futures = { version = "0.1.2" }
 embassy-sync = { version = "0.7.2" }
 futures = { version = "0.3.31", features = ["alloc"], default-features = false }
@@ -91,15 +82,16 @@ ft6x36 = { version = "0.6.1" }
 # Networking crates
 smoltcp = { version = "0.12.0", default-features = false, features = [ "proto-ipv4", "socket-tcp", "socket-icmp", "socket-udp", "medium-ethernet", "proto-dhcpv4", "socket-raw", "socket-dhcpv4"] }
 
-edge-nal-embassy = "0.7.0"
-edge-dhcp = { version = "0.6.0" }
-edge-nal = { version = "0.5.0" }
-edge-captive = { version = "0.6.0" }
-edge-http = { version = "0.6.1" }
-edge-mdns = { version = "0.6.1" }
+edge-nal-embassy = "0.8.1"
+edge-dhcp = { version = "0.7.0" }
+edge-nal = { version = "0.6.0" }
+edge-captive = { version = "0.7.0" }
+edge-http = { version = "0.7.0" }
+edge-mdns = { version = "0.7.0" }
 #picoserve = {version = "0.14.1", git = "https://github.com/sammhicks/picoserve", rev = "5d40ea410efa4c2e313cfaa19f62f844ece1fd55", features = ["alloc", "embassy"] }
-picoserve = {version = "0.15.1", features = ["alloc", "embassy"] }
-sntpc = { version = "0.7.0", default-features = false, features = ["embassy-socket", "embassy-socket-ipv6"]}
+picoserve = {version = "0.18.0", features = ["alloc", "embassy", "json"] }
+sntpc = { version = "0.8.1", default-features = false }
+sntpc-net-embassy = { version = "0.8.0", features = ["ipv6"] }
 
 
 # Utility crates
@@ -121,6 +113,7 @@ getrandom = { version = "0.2.15", features = ["custom"] }
 semver = { version = "1.0.25", default-features = false }
 snafu = { git = "https://github.com/shepmaster/snafu", rev = "aedc9db8c04a437b4c547efd4d73e9337fa43a4a", default-features = false, features = ["rust_1_81", "alloc"]} # , "backtraces-impl-backtrace-crate"]} 
 chrono = { version = "0.4.41", default-features = false }
+rand_core = "0.9"
 
 framework_macros = { package = "esp-hal-app-framework-macros", path = "../esp-hal-app-framework-macros/" }
 
@@ -147,7 +140,6 @@ esp32s3 = [
   "esp-backtrace/esp32s3",
   "esp-println/esp32s3",
   "esp-radio/esp32s3",
-  "esp-mbedtls/esp32s3",
   "esp-rtos/esp32s3",
   "esp-storage/esp32s3",
   "esp-hal-ota/esp32s3",
@@ -159,7 +151,6 @@ esp32 = [
   "esp-backtrace/esp32",
   "esp-println/esp32",
   "esp-radio/esp32",
-  "esp-mbedtls/esp32",
   "esp-rtos/esp32",
   "esp-storage/esp32",
   "esp-hal-ota/esp32",
@@ -170,12 +161,10 @@ esp32c3 = [
   "esp-backtrace/esp32c3",
   "esp-println/esp32c3",
   "esp-radio/esp32c3",
-  "esp-mbedtls/esp32c3",
 ]
 esp32s2 = [
   "esp-hal/esp32s2",
   "esp-backtrace/esp32s2",
   "esp-println/esp32s2",
   "esp-radio/esp32s2",
-  "esp-mbedtls/esp32s2",
 ]
