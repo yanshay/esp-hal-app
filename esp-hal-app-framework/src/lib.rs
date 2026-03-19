@@ -11,8 +11,10 @@ pub mod log_ext;
 
 pub mod terminal;
 
+pub mod backlight;
 pub mod flash_map;
 pub mod framework;
+pub mod ui_loop;
 #[cfg(feature = "wt32-sc01-plus")]
 pub mod wt32_sc01_plus;
 
@@ -22,9 +24,12 @@ pub mod improv_wifi;
 pub mod license;
 // pub mod sdcard;
 pub mod ota;
+pub mod sdcard_spi;
 pub mod sdcard_store;
 pub mod slint_ext;
 pub mod touch;
+#[cfg(feature = "wt32-sc01-plus")]
+pub mod ft6x36_adapter;
 pub mod web_server;
 pub mod wifi;
 #[macro_use]

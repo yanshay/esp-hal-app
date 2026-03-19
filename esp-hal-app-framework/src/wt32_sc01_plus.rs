@@ -1,8 +1,7 @@
 use alloc::{boxed::Box, rc::Rc, string::String};
 use core::{cell::RefCell, slice};
-use embassy_futures::select::{select3, select4, Either3, Either4};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
-use embassy_time::{Duration, Timer};
+use embassy_time::Timer;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::{
     dma::DmaTxBuf,
@@ -13,17 +12,21 @@ use esp_hal::{
     },
     ledc::{LowSpeed, channel::ChannelIFace, timer::TimerIFace},
     peripherals::LCD_CAM,
-    spi::{self, master::Spi},
+    spi,
     time::Rate,
 };
 use mipidsi::models::ST7796;
-use slint::platform::{software_renderer::Rgb565Pixel, update_timers_and_animations, WindowEvent};
+use slint::platform::software_renderer::Rgb565Pixel;
 
 use crate::{
+    backlight::BacklightDevice,
+    ft6x36_adapter::Ft6x36TouchAdapter,
     framework::Framework,
     mk_static,
+    sdcard_spi::create_sdcard_spi_device_dma,
     slint_ext::McuWindow,
-    touch::{Touch, TouchEvent, TouchPosition},
+    touch::Touch,
+    ui_loop::UiRenderBackend,
 };
 
 // For collecting stats on rendering time split
@@ -31,230 +34,68 @@ static mut GRAPHICS_TOTAL: u64 = 0;
 static mut TOTAL_LINES: u64 = 0;
 static mut TOTAL_PIXELS: u64 = 0;
 
-#[allow(clippy::too_many_arguments)]
-pub async fn event_loop<I2C: embedded_hal::i2c::I2c>(
-    touch_inner: ft6x36::Ft6x36<I2C>,
-    ti_irq: Input<'static>,
-    window: Rc<McuWindow>,
-    mut buffer_provider: DrawBuffer<'static, esp_hal::Blocking>,
-    mut channel0: esp_hal::ledc::channel::Channel<'static, LowSpeed>,
-    lstimer0: &'static esp_hal::ledc::timer::Timer<'static, esp_hal::ledc::LowSpeed>,
-    size: slint::PhysicalSize,
-    framework: Rc<RefCell<Framework>>,
-) {
-    let undim_display = framework.borrow().undim_display;
+// ===============================================================================================================
+// == WT32 Display Renderer Backend ===============================================================================
+// ===============================================================================================================
 
-    let mut touch = Touch::new(touch_inner, ti_irq);
+pub struct WT32RenderBackend<DM>
+where
+    DM: esp_hal::DriverMode,
+{
+    pub buffer_provider: DrawBuffer<'static, DM>,
+}
 
-    // == Event Loop ==================================================================
+impl<DM> UiRenderBackend for WT32RenderBackend<DM>
+where
+    DM: esp_hal::DriverMode,
+{
+    fn render(&mut self, renderer: &slint::platform::software_renderer::SoftwareRenderer) {
+        let start_graphics_time = embassy_time::Instant::now();
 
-    // https://github.com/slint-ui/slint/discussions/3994
-    // https://slint.dev/releases/1.0.2/docs/rust/slint/docs/mcu/#the-event-loop
-    // https://github.com/slint-ui/slint/issues/2793#issuecomment-1609154575
+        // For single line rendering (2/2)
+        renderer.render_by_line(&mut self.buffer_provider);
 
-    // Process touch events as stream so not to restart the touch future every time from scratch
-    // should be more efficient and also maybe avoid missing events
-
-    use futures_util::StreamExt; // reuired since includes reuired implementation
-    let mut touch_events_stream = Box::pin(touch.events_stream_async());
-
-    // Helper function for coordinates transformation
-    #[inline(always)]
-    fn touch_pos_to_logical_pos(
-        pos: TouchPosition,
-        _size: &slint::PhysicalSize,
-        window: &McuWindow,
-    ) -> slint::LogicalPosition {
-        slint::PhysicalPosition::new(pos.x as _, pos.y as _).to_logical(window.scale_factor())
-    }
-
-    // Helper function for turning sync function to cooperate with embassy async framework
-    // async fn async_update_timers_and_animations() {
-    //     slint::platform::update_timers_and_animations();
-    //     embassy_futures::yield_now().await;
-    // }
-
-    // Touch events will translate to left button mouse
-    let button = slint::platform::PointerEventButton::Left;
-
-    let mut last_touch_time = embassy_time::Instant::now();
-    let mut display_fully_dimmed = false;
-    let mut display_partially_dimmed = false;
-    let mut ignore_touch = false;
-
-    // let mut loop_count = 0;
-    loop {
-        // loop_count += 1;
-        // dbg!(loop_count);
-
-        // draw at the beginning, for first time drawing, in case (common) will await following that
-        slint::platform::update_timers_and_animations();
-
-        window.draw_if_needed(|renderer| {
-            let start_graphics_time = embassy_time::Instant::now();
-
-            // For single line rendering (2/2)
-            renderer.render_by_line(&mut buffer_provider);
-
-            let graphics_time = start_graphics_time.elapsed();
-            unsafe {
-                GRAPHICS_TOTAL += graphics_time.as_micros();
-            }
-        });
-
-        let async_res;
-
-        if window.has_active_animations() {
-            update_timers_and_animations();
-            // async_res = Either3::Second(());
-            // TODO: think how to deal with update timers and animations, even when nothing waked up event loop (due to backend changes, or maybe timers in slint?)
-            //       I think I've done it, but keeping this to make sure I verify this
-            let res = select3(
-                touch_events_stream.next(),
-                embassy_futures::yield_now(),
-                undim_display.wait(),
-            )
-            .await;
-            match res {
-                Either3::First(event) => {
-                    async_res = Either4::First(event);
-                }
-                Either3::Second(_) => {
-                    async_res = Either4::Second(());
-                }
-                Either3::Third(_) => {
-                    async_res = Either4::Fourth(());
-                }
-            }
-            update_timers_and_animations();
-        } else {
-            update_timers_and_animations();
-            let wait_duration;
-            if let Some(duration) = slint::platform::duration_until_next_timer_update() {
-                wait_duration = Duration::from_micros(duration.as_micros() as u64);
-            } else {
-                wait_duration = Duration::from_micros(5_000_000); // can also be infinite, just for life check
-            }
-            async_res = select4(
-                touch_events_stream.next(),
-                Timer::after(wait_duration),
-                window.wait_needs_redraw(),
-                undim_display.wait(),
-            )
-            .await;
-            slint::platform::update_timers_and_animations();
-        }
-        match async_res {
-            Either4::First(None) => {
-                warn!(
-                    "Shouldn't get here, event_stream_async should either wait or return an event"
-                );
-            }
-            Either4::First(_) | Either4::Fourth(_) => {
-                // Start with common to touch and undim - need to undim the display
-                last_touch_time = embassy_time::Instant::now();
-                slint::platform::update_timers_and_animations();
-                if display_partially_dimmed || display_fully_dimmed {
-                    trace!("Undimming the display");
-                    channel0
-                        .configure(esp_hal::ledc::channel::config::Config {
-                            timer: lstimer0,
-                            duty_pct: 100,
-                            drive_mode: esp_hal::gpio::DriveMode::PushPull,
-                        })
-                        .unwrap();
-                    display_fully_dimmed = false;
-                    display_partially_dimmed = false;
-                }
-                // Now address the case of touch
-                if let Either4::First(Some(event)) = async_res {
-                    match event {
-                        // Ignore error because nothing much we can do about it
-                        Err(_) => (),
-                        Ok(event) => {
-                            if let Some(event) = event {
-                                match event {
-                                    TouchEvent::TouchMoved(pos) => {
-                                        if !ignore_touch {
-                                            let position =
-                                                touch_pos_to_logical_pos(pos, &size, &window);
-                                            let win_event = WindowEvent::PointerMoved { position };
-                                            // dbg!(&win_event);
-                                            window.dispatch_event(win_event);
-                                        }
-                                    }
-                                    TouchEvent::TouchPressed(pos) => {
-                                        if !ignore_touch {
-                                            let position =
-                                                touch_pos_to_logical_pos(pos, &size, &window);
-                                            let win_event =
-                                                WindowEvent::PointerPressed { position, button };
-                                            // dbg!(&win_event);
-                                            window.dispatch_event(win_event);
-                                        }
-                                    }
-                                    TouchEvent::TouchReleased(pos) => {
-                                        if !ignore_touch {
-                                            let position =
-                                                touch_pos_to_logical_pos(pos, &size, &window);
-                                            let win_event =
-                                                WindowEvent::PointerReleased { position, button };
-                                            // dbg!(&win_event);
-                                            window.dispatch_event(win_event);
-                                            window.dispatch_event(WindowEvent::PointerExited);
-                                        } else {
-                                            ignore_touch = false;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Either4::Second(_) => {
-                let framework = framework.borrow();
-                if !display_fully_dimmed
-                    && last_touch_time.elapsed().as_secs() > framework.display_blackout_timeout
-                {
-                    channel0
-                        .configure(esp_hal::ledc::channel::config::Config {
-                            timer: lstimer0,
-                            duty_pct: 0,
-                            drive_mode: esp_hal::gpio::DriveMode::PushPull,
-                        })
-                        .unwrap();
-                    if !display_fully_dimmed {
-                        info!("Blanking the display")
-                    }
-                    display_fully_dimmed = true;
-                    ignore_touch = true;
-                } else if !display_partially_dimmed
-                    && last_touch_time.elapsed().as_secs() > framework.display_dimming_timeout
-                {
-                    trace!("Dimming the display");
-                    channel0
-                        .configure(esp_hal::ledc::channel::config::Config {
-                            timer: lstimer0,
-                            duty_pct: framework.display_dimming_percent,
-                            drive_mode: esp_hal::gpio::DriveMode::PushPull,
-                        })
-                        .unwrap();
-                    display_partially_dimmed = true;
-                }
-                // Case of slint timeout
-                // slint::platform::update_timers_and_animations();
-            }
-            Either4::Third(_) => {
-                // Case of need to redraw
-                // slint::platform::update_timers_and_animations();
-            }
+        let graphics_time = start_graphics_time.elapsed();
+        unsafe {
+            GRAPHICS_TOTAL += graphics_time.as_micros();
         }
     }
 }
 
 // ===============================================================================================================
-// == Slint Esp Backend Implementation for drawing and timer, specific to thid device ============================
+// == WT32 Backlight Control ======================================================================================
+// ===============================================================================================================
+
+pub struct WT32Backlight {
+    channel0: esp_hal::ledc::channel::Channel<'static, LowSpeed>,
+    timer: &'static esp_hal::ledc::timer::Timer<'static, esp_hal::ledc::LowSpeed>,
+}
+
+impl WT32Backlight {
+    pub fn new(
+        channel0: esp_hal::ledc::channel::Channel<'static, LowSpeed>,
+        timer: &'static esp_hal::ledc::timer::Timer<'static, esp_hal::ledc::LowSpeed>,
+    ) -> Self {
+        Self { channel0, timer }
+    }
+}
+
+impl BacklightDevice for WT32Backlight {
+    type Error = ();
+
+    fn set_percent(&mut self, percent: u8) -> Result<(), Self::Error> {
+        self.channel0
+            .configure(esp_hal::ledc::channel::config::Config {
+                timer: self.timer,
+                duty_pct: percent,
+                drive_mode: esp_hal::gpio::DriveMode::PushPull,
+            })
+            .map_err(|_| ())
+    }
+}
+
+// ===============================================================================================================
+// == Slint Esp Backend Implementation for drawing and timer, specific to this device ============================
 // ===============================================================================================================
 
 pub struct EspBackend {
@@ -389,6 +230,10 @@ where
     }
 }
 
+// ===============================================================================================================
+// == WT32 Rendering Stats =======================================================================================
+// ===============================================================================================================
+
 #[embassy_executor::task]
 async fn stats_task() {
     loop {
@@ -398,6 +243,10 @@ async fn stats_task() {
         Timer::after_secs(5).await;
     }
 }
+
+// ===============================================================================================================
+// == WT32 Display Peripherals ===================================================================================
+// ===============================================================================================================
 
 #[allow(non_snake_case)]
 pub struct WT32SC01PlusDisplayPeripherals<CHLCD, P>
@@ -426,6 +275,10 @@ where
     pub I2Cx: P,
 }
 
+// ===============================================================================================================
+// == WT32 SDCard Peripherals ====================================================================================
+// ===============================================================================================================
+
 #[allow(non_snake_case)]
 pub struct WT32SC01PlusSDCardPeripherals<S, CHSD>
 where
@@ -439,6 +292,10 @@ where
     pub SPIx: S,
     pub DMA_CHx: CHSD,
 }
+
+// ===============================================================================================================
+// == WT32 Board Abstraction =====================================================================================
+// ===============================================================================================================
 
 type InitDone = Signal<CriticalSectionRawMutex, Result<(), String>>;
 
@@ -470,7 +327,7 @@ impl WT32SC01Plus {
         CHLCD: esp_hal::dma::TxChannelFor<LCD_CAM<'static>> + 'static,
         P: esp_hal::i2c::master::Instance + 'static,
         S: esp_hal::spi::master::Instance + 'static,
-        CHSD: esp_hal::dma::DmaChannelFor<spi::master::AnySpi<'static>> + 'a,
+        CHSD: esp_hal::dma::DmaChannelFor<spi::master::AnySpi<'static>> + 'a + 'static,
     {
         let init_done = mk_static!(InitDone, InitDone::new());
         let runner = WT32SC01PlusRunner {
@@ -480,6 +337,10 @@ impl WT32SC01Plus {
             init_done,
         };
         let me = Self { init_done };
+
+        // ===============================================================================================================
+        // == WT32 SDCard Interface =======================================================================================
+        // ===============================================================================================================
 
         let sd_cs = Output::new(
             sdcard_peripherals.GPIO41,
@@ -493,68 +354,26 @@ impl WT32SC01Plus {
 
         // Non DMA version ////////////////////////////////////////
 
-        // let spi_bus = Spi::new(
+        // let sdcard_spi_device = crate::sdcard_spi::create_sdcard_spi_device_no_dma(
         //     spix,
-        //     spi::master::Config::default()
-        //         .with_frequency(2.MHz())
-        //         .with_mode(spi::Mode::_0),
-        // )
-        // .unwrap()
-        // .with_sck(sd_sclk)
-        // .with_miso(sd_miso)
-        // .with_mosi(sd_mosi)
-        // .into_async();
-
-        // let sdcard_spi_device: ExclusiveDevice<
-        //     esp_hal::spi::master::Spi<'_, esp_hal::Async>,
-        //     esp_hal::gpio::Output<'_>,
-        //     embedded_hal_bus::spi::NoDelay,
-        // > = ExclusiveDevice::new_no_delay(spi_bus, sd_cs).unwrap();
+        //     sd_cs,
+        //     sd_sclk,
+        //     sd_miso,
+        //     sd_mosi,
+        //     Rate::from_mhz(2),
+        // );
 
         // DMA version /////////////////////////////////////////////
 
-        use esp_hal::dma::DmaRxBuf;
-        const DMA_BUFFER_SIZE: usize = 1024;
-
-        let (tx_buffer, tx_descriptors, _, _) = esp_hal::dma_buffers!(DMA_BUFFER_SIZE, 0);
-        // info!(
-        //     "tx: {:p} len {} ({} descriptors)",
-        //     tx_buffer.as_ptr(),
-        //     tx_buffer.len(),
-        //     tx_descriptors.len()
-        // );
-        let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
-
-        let (rx_buffer, rx_descriptors, _, _) = esp_hal::dma_buffers!(DMA_BUFFER_SIZE, 0);
-        // info!(
-        //     "RX: {:p} len {} ({} descriptors)",
-        //     rx_buffer.as_ptr(),
-        //     rx_buffer.len(),
-        //     rx_descriptors.len()
-        // );
-        let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
-        // Need to set miso first so that mosi can overwrite the
-        // output connection (because we are using the same pin to loop back)
-        let dma_ch = sdcard_peripherals.DMA_CHx;
-        let spi_bus = Spi::new(
+        let sdcard_spi_device = create_sdcard_spi_device_dma(
             spix,
-            spi::master::Config::default()
-                .with_frequency(Rate::from_mhz(20)) // 2 or 25.MHz()?
-                .with_mode(spi::Mode::_0),
-        )
-        .unwrap()
-        .with_sck(sd_sclk)
-        .with_miso(sd_miso)
-        .with_mosi(sd_mosi)
-        .with_dma(dma_ch)
-        .with_buffers(dma_rx_buf, dma_tx_buf)
-        .into_async();
-
-        let sdcard_spi_device: ExclusiveDevice<
-            esp_hal::spi::master::SpiDmaBus<'_, esp_hal::Async>,
-            esp_hal::gpio::Output<'_>,
-            embedded_hal_bus::spi::NoDelay,
-        > = ExclusiveDevice::new_no_delay(spi_bus, sd_cs).unwrap();
+            sdcard_peripherals.DMA_CHx,
+            sd_cs,
+            sd_sclk,
+            sd_miso,
+            sd_mosi,
+            Rate::from_mhz(20), // 2 or 25.MHz()?
+        );
 
         ////////////////////////////////////////////////////////////
 
@@ -564,6 +383,10 @@ impl WT32SC01Plus {
         self.init_done.wait().await
     }
 }
+
+// ===============================================================================================================
+// == WT32 Board Runner ==========================================================================================
+// ===============================================================================================================
 
 pub struct WT32SC01PlusRunner<C, P>
 where
@@ -584,7 +407,9 @@ where
     pub async fn run(&mut self) {
         let mut peripherals = self.peripherals.take().unwrap();
 
-        // == Setup Display Interface (di) ================================================
+        // ===============================================================================================================
+        // == WT32 Runner - Display Interface ==========================================================================
+        // ===============================================================================================================
 
         let di_wr = Output::new(
             peripherals.GPIO47.reborrow(),
@@ -687,9 +512,11 @@ where
                 frequency: Rate::from_khz(24),
             })
             .unwrap();
-        let mut channel0 = ledc.channel(esp_hal::ledc::channel::Number::Channel0, di_bl);
+        let channel0 = ledc.channel(esp_hal::ledc::channel::Number::Channel0, di_bl);
 
-        // == Setup Touch Interface =======================================================
+        // ===============================================================================================================
+        // == WT32 Runner - Touch Interface ============================================================================
+        // ===============================================================================================================
 
         let ti_sda = peripherals.GPIO6; //.into_push_pull_output();
         let ti_scl = peripherals.GPIO5; //.into_push_pull_output();
@@ -716,7 +543,9 @@ where
         )
         .unwrap();
 
-        // == Setup the Slint Bacdkend ====================================================
+        // ===============================================================================================================
+        // == WT32 Runner - Slint Backend ==============================================================================
+        // ===============================================================================================================
 
         let (width, height, ft6x36orientation) = match self.display_orientation.rotation {
             mipidsi::options::Rotation::Deg0 => (320, 480, ft6x36::Orientation::Portrait), // ?? orientation not tested
@@ -747,32 +576,28 @@ where
             );
         }
 
+        let touch_adapter = Ft6x36TouchAdapter::new(touch_inner, ti_irq);
+        let touch = Touch::new(touch_adapter);
+
+        let render_backend = WT32RenderBackend { buffer_provider };
+        let mut backlight = WT32Backlight::new(channel0, lstimer0);
+
         // Turn on display backlight
-        channel0
-            .configure(esp_hal::ledc::channel::config::Config {
-                timer: lstimer0,
-                duty_pct: 100,
-                drive_mode: esp_hal::gpio::DriveMode::PushPull,
-            })
-            .unwrap();
+        backlight
+            .set_percent(100)
+            .expect("Failed to set display backlight to 100%");
 
         self.init_done.signal(Ok(()));
 
-        event_loop(
-            touch_inner,
-            ti_irq,
-            window,
-            buffer_provider,
-            channel0,
-            lstimer0,
-            size,
-            self.framework.clone(),
-        )
-        .await;
+        crate::ui_loop::event_loop(touch, window, render_backend, backlight, self.framework.clone())
+            .await;
     }
 }
 
-// == WT32-SC01 Fast Display Bus instead of slow display_interface_parallel_gpio bus ================================================================
+// ===============================================================================================================
+// == WT32 Fast Display Bus ======================================================================================
+// ===============================================================================================================
+// WT32-SC01 Fast Display Bus instead of slow display_interface_parallel_gpio bus
 // Not really needed since we use DMA now, so this is used only for setup, but may be useful for fast gpio in the future, so using this implementation
 
 #[derive(Default)]

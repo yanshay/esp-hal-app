@@ -1,4 +1,3 @@
-use embassy_time::Duration;
 use embedded_hal::digital::InputPin;
 
 pub enum Error {
@@ -41,103 +40,25 @@ impl TouchEvent {
 
 pub trait IrqTraits = InputPin + embedded_hal_async::digital::Wait;
 
-pub struct Touch<IRQ, I2C> {
-    irq: IRQ,
-    driver: ft6x36::Ft6x36<I2C>,
-    last_returned_event: Option<TouchEvent>,
+#[allow(async_fn_in_trait)]
+pub trait TouchAdapter {
+    async fn next_event(&mut self) -> Result<TouchEvent, Error>;
 }
 
-// use embedded_hal
+pub struct Touch<A> {
+    adapter: A,
+}
 
-impl<IRQ, I2C> Touch<IRQ, I2C>
+impl<A> Touch<A>
 where
-    I2C: embedded_hal::i2c::I2c<embedded_hal::i2c::SevenBitAddress>,
-    IRQ: IrqTraits,
+    A: TouchAdapter,
 {
-    pub fn new(driver: ft6x36::Ft6x36<I2C>, irq: IRQ) -> Self {
-        Self {
-            irq,
-            driver,
-            last_returned_event: None,
-        }
+    pub fn new(adapter: A) -> Self {
+        Self { adapter }
     }
 
-    pub fn event(&mut self) -> Result<Option<TouchEvent>, Error> {
-        let t = self.driver.get_touch_event().unwrap();
-        // dbg!(t);
-        match t.p1 {
-            None => {
-                if let Some(event) = self.last_returned_event {
-                    self.last_returned_event = None;
-                    Ok(Some(TouchEvent::TouchReleased(event.touch_position())))
-                } else {
-                    Ok(None)
-                }
-            }
-            Some(event) => {
-                let ft6x36::TouchPoint { touch_type, x, y } = event;
-                let pos = TouchPosition {
-                    x: x as i32,
-                    y: y as i32,
-                };
-                match touch_type {
-                    ft6x36::TouchType::Press => {
-                        self.last_returned_event = Some(TouchEvent::TouchPressed(pos));
-                        Ok(self.last_returned_event)
-                    }
-                    ft6x36::TouchType::Contact => {
-                        // if starting with a move event, then missed the press, it is more important then sending it
-                        // Theoretically, there should have been a queue
-                        if self.last_returned_event.is_none() {
-                            self.last_returned_event = Some(TouchEvent::TouchPressed(pos));
-                            Ok(self.last_returned_event)
-                        } else {
-                            self.last_returned_event = Some(TouchEvent::TouchMoved(pos));
-                            Ok(self.last_returned_event)
-                        }
-                    }
-                    ft6x36::TouchType::Release => {
-                        self.last_returned_event = None;
-                        Ok(Some(TouchEvent::TouchReleased(pos)))
-                    }
-                    ft6x36::TouchType::Invalid => Err(Error::IOError),
-                }
-            }
-        }
-    }
-
-    //  TODO: potentially can add noise reduction, after release, wait a period of time before
-    //  allowing to generate events, so there won't be a too quick press/up/press/up
-    //  TODO: to the reading also async (not sure it's worth it though)
-    // #[cfg(feature = "async")]
     pub async fn event_async(&mut self) -> Result<Option<TouchEvent>, Error> {
-        use embassy_time::with_timeout;
-
-        loop {
-            if self.last_returned_event.is_some() {
-                // if touch is already pressed, wait for either (a) release of touch or (b) timeout
-                // in other words, start polling and check if need to generate a touch event (on move, or release) every x millisec
-                // and if a release of the interrupt line (meaning depress) happens earlier response will be faster than the x millisec polling
-                let _ = with_timeout(Duration::from_millis(200), self.irq.wait_for_high()).await;
-            } else {
-                // if touch not already pressed,
-                // let's not waste cpu by polling, wait for the first event to trigger the press
-                // in this case we wait for low (rather than transition) in case for some reason we miss the edge or data
-                // not available on edge, so a low signal will trigger again
-                let _ = self.irq.wait_for_low().await;
-            }
-            match self.event() {
-                Ok(event) => {
-                    if event.is_some() {
-                        return Ok(event);
-                    } else {
-                        // in case of no event for some reason
-                        continue;
-                    }
-                }
-                Err(err) => return Err(err),
-            }
-        }
+        self.adapter.next_event().await.map(Some)
     }
 
     // https://stackoverflow.com/questions/66607516/how-to-implement-streams-from-future-functions
