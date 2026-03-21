@@ -176,7 +176,7 @@ pub struct Framework {
     pub web_config_key: String,
     pub ota_state: Option<OtaState>,
 
-    #[cfg(feature = "wt32-sc01-plus")]
+    #[cfg(any(feature = "wt32-sc01-plus", feature = "jc8048w550c"))]
     #[allow(clippy::type_complexity)]
     inner_file_store: Option<
         Rc<
@@ -242,7 +242,7 @@ impl Framework {
             web_config_key: String::new(),
             settings,
             ota_state: None,
-            #[cfg(feature = "wt32-sc01-plus")]
+            #[cfg(any(feature = "wt32-sc01-plus", feature = "jc8048w550c"))]
             inner_file_store: None,
         };
         let framework = Rc::new(RefCell::new(framework));
@@ -416,7 +416,7 @@ impl Framework {
         Ok(())
     }
 
-    #[cfg(feature = "wt32-sc01-plus")]
+    #[cfg(any(feature = "wt32-sc01-plus", feature = "jc8048w550c"))]
     pub async fn set_sdcard_device(
         framework: Rc<RefCell<Framework>>,
         // Non DMA Version
@@ -443,7 +443,7 @@ impl Framework {
         framework.borrow_mut().inner_file_store = Some(file_store);
     }
 
-    #[cfg(feature = "wt32-sc01-plus")]
+    #[cfg(any(feature = "wt32-sc01-plus", feature = "jc8048w550c"))]
     #[allow(clippy::type_complexity)]
     pub fn file_store(
         &self,
@@ -537,7 +537,7 @@ impl Framework {
     }
 
     pub fn reset_device_safer(&self, timeout: Option<Duration>) {
-        #[cfg(feature = "wt32-sc01-plus")]
+        #[cfg(any(feature = "wt32-sc01-plus", feature = "jc8048w550c"))]
         {
             let framework = self.framework.as_ref().unwrap().clone();
             self.spawner
@@ -547,7 +547,7 @@ impl Framework {
                 .ok();
         }
 
-        #[cfg(not(feature = "wt32-sc01-plus"))]
+        #[cfg(not(any(feature = "wt32-sc01-plus", feature = "jc8048w550c")))]
         {
             let _ = timeout;
             self.reset_device_immediate();
@@ -555,7 +555,7 @@ impl Framework {
     }
 
     pub async fn reset_device_safer_async(framework: Rc<RefCell<Self>>, timeout: Option<Duration>) {
-        #[cfg(feature = "wt32-sc01-plus")]
+        #[cfg(any(feature = "wt32-sc01-plus", feature = "jc8048w550c"))]
         {
             let file_store = framework.borrow().inner_file_store.clone();
             if let Some(file_store) = file_store {
@@ -574,7 +574,7 @@ impl Framework {
             }
         }
 
-        #[cfg(not(feature = "wt32-sc01-plus"))]
+        #[cfg(not(any(feature = "wt32-sc01-plus", feature = "jc8048w550c")))]
         {
             let _ = (framework, timeout);
             esp_hal::system::software_reset();

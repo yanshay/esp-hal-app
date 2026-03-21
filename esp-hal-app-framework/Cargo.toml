@@ -78,6 +78,7 @@ display-interface-parallel-gpio = { version = "0.7.0" }
 mipidsi = { version = "0.8.0" } # can't upgrade due to mismatch with display-interface-parallel-gpio 0.7.0
 slint = { version = ">=1.11.0", default-features = false, features = [ "libm", "unsafe-single-threaded", "compat-1-2", "renderer-software" ] }
 ft6x36 = { version = "0.6.1" }
+gt9x = { version = "0.1.0", optional = true }
 
 # Networking crates
 smoltcp = { version = "0.12.0", default-features = false, features = [ "proto-ipv4", "socket-tcp", "socket-icmp", "socket-udp", "medium-ethernet", "proto-dhcpv4", "socket-raw", "socket-dhcpv4"] }
@@ -130,10 +131,13 @@ hmac = { version = "0.12.1", default-features = false}
 [features]
 default = ["esp32s3", "extern-random", "improv-jtag-serial"]
 wt32-sc01-plus=[]
+jc8048w550c=["esp-hal/psram", "dep:gt9x"]
 extern-random=[]
 improv-uart=[]
 improv-jtag-serial=[]
 tls=[]
+rgb-stats=[]
+rgb-precomputed-m2m-descriptors-off=[]
 
 esp32s3 = [
   "esp-hal/esp32s3",

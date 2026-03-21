@@ -5,6 +5,8 @@
 #![feature(impl_trait_in_assoc_type)]
 #![no_main]
 #![feature(associated_type_defaults)]
+#![cfg_attr(feature = "jc8048w550c", feature(generic_const_exprs))]
+#![cfg_attr(feature = "jc8048w550c", allow(incomplete_features))]
 
 #[macro_use]
 pub mod log_ext;
@@ -17,6 +19,8 @@ pub mod framework;
 pub mod ui_loop;
 #[cfg(feature = "wt32-sc01-plus")]
 pub mod wt32_sc01_plus;
+#[cfg(feature = "jc8048w550c")]
+pub mod jc8048w550c;
 
 #[macro_use]
 pub mod framework_web_app;
@@ -30,6 +34,11 @@ pub mod slint_ext;
 pub mod touch;
 #[cfg(feature = "wt32-sc01-plus")]
 pub mod ft6x36_adapter;
+#[cfg(feature = "jc8048w550c")]
+pub mod gt9x_adapter;
+#[cfg(feature = "jc8048w550c")]
+#[path = "rgb-display.rs"]
+pub mod rgb_display;
 pub mod web_server;
 pub mod wifi;
 #[macro_use]
@@ -39,6 +48,9 @@ pub mod ntp;
 pub mod mdns;
 
 extern crate alloc;
+
+#[cfg(all(feature = "wt32-sc01-plus", feature = "jc8048w550c"))]
+compile_error!("Only one board feature can be enabled at a time");
 
 pub mod prelude {
     pub use crate::flash_map::FlashMap;
