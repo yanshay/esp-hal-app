@@ -14,6 +14,22 @@ macro_rules! file_name {
 // Prints and returns the value of a given expression for quick and dirty
 // debugging.
 // implementation adapted from `std::dbg`
+#[cfg(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+))]
 #[macro_export]
 macro_rules! dbg {
     // NOTE: We cannot use `concat!` to make a static string as a format argument
@@ -39,6 +55,51 @@ macro_rules! dbg {
     };
 }
 
+#[cfg(not(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+)))]
+#[macro_export]
+macro_rules! dbg {
+    () => {
+        ()
+    };
+    ($val:expr $(,)?) => {
+        $val
+    };
+    ($($val:expr),+ $(,)?) => {
+        ($($val),+,)
+    };
+}
+
+#[cfg(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+))]
 #[macro_export]
 macro_rules! dbgt {
     // NOTE: We cannot use `concat!` to make a static string as a format argument
@@ -65,29 +126,315 @@ macro_rules! dbgt {
     };
 }
 
+#[cfg(not(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+)))]
+#[macro_export]
+macro_rules! dbgt {
+    ($txt:expr) => {
+        ()
+    };
+    ($txt:expr, $val:expr $(,)?) => {
+        $val
+    };
+    ($txt:expr, ($val:expr),+ $(,)?) => {
+        ($($val),+,)
+    };
+}
+
+#[cfg(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+))]
 #[macro_export]
 macro_rules! trace {
     ($($arg:tt)+) => (log::trace!("[{}:{}] {}", $crate::file_name!(), ::core::line!(), core::format_args!($($arg)+)))
 }
+
+#[cfg(not(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+)))]
+#[macro_export]
+macro_rules! trace {
+    ($($arg:tt)+) => {
+        ()
+    };
+}
+
+#[cfg(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+))]
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)+) => (log::debug!("[{}:{}] {}", $crate::file_name!(), ::core::line!(), core::format_args!($($arg)+)))
 }
+
+#[cfg(not(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+)))]
 #[macro_export]
-macro_rules! warn {
-    ($($arg:tt)+) => (log::warn!("[{}:{}] {}", $crate::file_name!(), ::core::line!(), core::format_args!($($arg)+)))
+macro_rules! debug {
+    ($($arg:tt)+) => {
+        ()
+    };
 }
-#[macro_export]
-macro_rules! error {
-    ($($arg:tt)+) => (log::error!("[{}:{}] {}", $crate::file_name!(), ::core::line!(), core::format_args!($($arg)+)))
-}
+
+#[cfg(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        feature = "log_info",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+))]
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)+) => (log::info!("[{}:{}] {}", $crate::file_name!(), ::core::line!(), core::format_args!($($arg)+)))
 }
+
+#[cfg(not(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        feature = "log_info",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+)))]
+#[macro_export]
+macro_rules! info {
+    ($($arg:tt)+) => {
+        ()
+    };
+}
+
+#[cfg(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        feature = "log_info",
+        feature = "log_warn",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+))]
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)+) => (log::warn!("[{}:{}] {}", $crate::file_name!(), ::core::line!(), core::format_args!($($arg)+)))
+}
+
+#[cfg(not(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        feature = "log_info",
+        feature = "log_warn",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+)))]
+#[macro_export]
+macro_rules! warn {
+    ($($arg:tt)+) => {
+        ()
+    };
+}
+
+#[cfg(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        feature = "log_info",
+        feature = "log_warn",
+        feature = "log_error",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+))]
+#[macro_export]
+macro_rules! error {
+    ($($arg:tt)+) => (log::error!("[{}:{}] {}", $crate::file_name!(), ::core::line!(), core::format_args!($($arg)+)))
+}
+
+#[cfg(not(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        feature = "log_info",
+        feature = "log_warn",
+        feature = "log_error",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+)))]
+#[macro_export]
+macro_rules! error {
+    ($($arg:tt)+) => {
+        ()
+    };
+}
+
+#[cfg(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        feature = "log_info",
+        feature = "log_warn",
+        feature = "log_error",
+        feature = "log_fatal",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+))]
 #[macro_export]
 macro_rules! fatal {
     ($($arg:tt)+) => (log::fatal!("[{}:{}] {}", $crate::file_name!(), ::core::line!(), core::format_args!($($arg)+)))
+}
+
+#[cfg(not(all(
+    not(feature = "log_none"),
+    any(
+        feature = "log_trace",
+        feature = "log_debug",
+        feature = "log_info",
+        feature = "log_warn",
+        feature = "log_error",
+        feature = "log_fatal",
+        not(any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal",
+            feature = "log_none"
+        ))
+    )
+)))]
+#[macro_export]
+macro_rules! fatal {
+    ($($arg:tt)+) => {
+        ()
+    };
 }
 
 // TODO: can optimize to a single pattern, can maybe also hook into the log infrastructure to do this more elegant, including hiding the term param

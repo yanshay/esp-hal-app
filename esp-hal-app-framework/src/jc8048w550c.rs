@@ -34,7 +34,7 @@ use crate::{
 const DISP_W: usize = 800;
 const DISP_H: usize = 480;
 const DISP_BPP: usize = 2;
-const DISP_ROWS: usize = 16;
+const DISP_ROWS: usize = 8;
 const DISP_FRAME_BYTES: usize = DISP_W * DISP_H * DISP_BPP;
 
 const DISP_BOUNCE_BYTES: usize = display_bounce_bytes(DISP_W, DISP_BPP, DISP_ROWS);
@@ -77,12 +77,34 @@ pub struct Jc8048w550cRenderBackend {
 impl UiRenderBackend for Jc8048w550cRenderBackend {
     fn render(&mut self, renderer: &slint::platform::software_renderer::SoftwareRenderer) {
         if let Some(mut frame_guard) = self.display.acquire_writable_frame() {
+            struct FrameLineBuffer<'a> {
+                frame_buffer: &'a mut [slint::platform::software_renderer::Rgb565Pixel],
+                stride: usize,
+            }
+
+            impl<'a> slint::platform::software_renderer::LineBufferProvider for FrameLineBuffer<'a> {
+                type TargetPixel = slint::platform::software_renderer::Rgb565Pixel;
+
+                fn process_line(
+                    &mut self,
+                    line: usize,
+                    range: core::ops::Range<usize>,
+                    render_fn: impl FnOnce(&mut [Self::TargetPixel]),
+                ) {
+                    let line_begin = line * self.stride;
+                    render_fn(&mut self.frame_buffer[line_begin..][range]);
+                }
+            }
+
             let frame = frame_guard.buffer_mut();
             let pixel_count = frame.len() / core::mem::size_of::<slint::platform::software_renderer::Rgb565Pixel>();
             let pixels: &mut [slint::platform::software_renderer::Rgb565Pixel] =
                 unsafe { slice::from_raw_parts_mut(frame.as_mut_ptr() as *mut _, pixel_count) };
 
-            renderer.render(pixels, DISP_W);
+            renderer.render_by_line(FrameLineBuffer {
+                frame_buffer: pixels,
+                stride: DISP_W,
+            });
             frame_guard
                 .present()
                 .expect("Failed to present RGB display frame");

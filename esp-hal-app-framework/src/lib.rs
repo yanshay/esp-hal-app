@@ -52,6 +52,16 @@ extern crate alloc;
 #[cfg(all(feature = "wt32-sc01-plus", feature = "jc8048w550c"))]
 compile_error!("Only one board feature can be enabled at a time");
 
+#[cfg(any(
+    all(feature = "log_none", any(feature = "log_trace", feature = "log_debug", feature = "log_info", feature = "log_warn", feature = "log_error", feature = "log_fatal")),
+    all(feature = "log_trace", any(feature = "log_debug", feature = "log_info", feature = "log_warn", feature = "log_error", feature = "log_fatal")),
+    all(feature = "log_debug", any(feature = "log_info", feature = "log_warn", feature = "log_error", feature = "log_fatal")),
+    all(feature = "log_info", any(feature = "log_warn", feature = "log_error", feature = "log_fatal")),
+    all(feature = "log_warn", any(feature = "log_error", feature = "log_fatal")),
+    all(feature = "log_error", feature = "log_fatal"),
+))]
+compile_error!("Only one log level feature can be enabled at a time");
+
 pub mod prelude {
     pub use crate::flash_map::FlashMap;
     pub use crate::framework::Framework;
