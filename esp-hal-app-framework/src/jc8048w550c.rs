@@ -46,6 +46,9 @@ const DISP_PRECOMPUTED_SRC_PTR_COUNT: usize =
 const DISP_PRECOMPUTED_DST_PTR_COUNT: usize =
     display_precomputed_dst_ptr_count(DISP_W, DISP_BPP, DISP_ROWS);
 
+#[repr(align(128))]
+struct AlignedLineBuffer([slint::platform::software_renderer::Rgb565Pixel; DISP_W]);
+
 type DisplayDmaStorage = RGBDisplayDmaStorage<
     DISP_BOUNCE_BYTES,
     DISP_BOUNCE_OUT_DESC_COUNT,
@@ -72,6 +75,7 @@ async fn stats_task() {
 
 pub struct Jc8048w550cRenderBackend {
     display: RGBDisplayDriver,
+    line_buffer: &'static mut AlignedLineBuffer,
 }
 
 impl UiRenderBackend for Jc8048w550cRenderBackend {
@@ -79,6 +83,7 @@ impl UiRenderBackend for Jc8048w550cRenderBackend {
         if let Some(mut frame_guard) = self.display.acquire_writable_frame() {
             struct FrameLineBuffer<'a> {
                 frame_buffer: &'a mut [slint::platform::software_renderer::Rgb565Pixel],
+                line_buffer: &'a mut [slint::platform::software_renderer::Rgb565Pixel; DISP_W],
                 stride: usize,
             }
 
@@ -91,8 +96,17 @@ impl UiRenderBackend for Jc8048w550cRenderBackend {
                     range: core::ops::Range<usize>,
                     render_fn: impl FnOnce(&mut [Self::TargetPixel]),
                 ) {
+                    let src = &mut self.line_buffer[range.clone()];
+                    render_fn(src);
+
                     let line_begin = line * self.stride;
-                    render_fn(&mut self.frame_buffer[line_begin..][range]);
+                    let dst_start = line_begin + range.start;
+                    let dst_end = line_begin + range.end;
+                    let dst = &mut self.frame_buffer[dst_start..dst_end];
+
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr(), src.len());
+                    }
                 }
             }
 
@@ -103,6 +117,7 @@ impl UiRenderBackend for Jc8048w550cRenderBackend {
 
             renderer.render_by_line(FrameLineBuffer {
                 frame_buffer: pixels,
+                line_buffer: &mut self.line_buffer.0,
                 stride: DISP_W,
             });
             frame_guard
@@ -445,7 +460,12 @@ where
             .expect("Failed to initialize GT9x touch controller");
 
         let touch = Touch::new(Gt9xAdapter::new(touch_inner, self.touch_config));
-        let render_backend = Jc8048w550cRenderBackend { display };
+        let line_buffer =
+            mk_static!(AlignedLineBuffer, AlignedLineBuffer([slint::platform::software_renderer::Rgb565Pixel(0); DISP_W]));
+        let render_backend = Jc8048w550cRenderBackend {
+            display,
+            line_buffer,
+        };
         let mut backlight = Jc8048w550cBacklight::new(channel0, lstimer0);
 
         backlight
