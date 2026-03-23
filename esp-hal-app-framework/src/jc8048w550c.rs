@@ -62,12 +62,47 @@ type DisplayDmaStorage = RGBDisplayDmaStorage<
 async fn stats_task() {
     loop {
         let stats = crate::rgb_display::RGBDisplayDriver::take_stats();
+        let wait_avg_us = if stats.wait_on_miss_wait_count == 0 {
+            0
+        } else {
+            stats.wait_on_miss_wait_total_us / stats.wait_on_miss_wait_count as u64
+        };
+        let out_isr_avg_us = if stats.out_isr_count == 0 {
+            0
+        } else {
+            stats.out_isr_total_us / stats.out_isr_count as u64
+        };
+        let in_isr_avg_us = if stats.in_isr_count == 0 {
+            0
+        } else {
+            stats.in_isr_total_us / stats.in_isr_count as u64
+        };
+        let isr_total_us = stats.out_isr_total_us + stats.in_isr_total_us;
+        let isr_count = stats.out_isr_count as u64 + stats.in_isr_count as u64;
+        let isr_avg_us = if isr_count == 0 {
+            0
+        } else {
+            isr_total_us / isr_count
+        };
         info!(
-            "m2m_stats/s out_eof_while_inflight={} pending_same_half_overwrite={} m2m_copy_start={} stale_window_tx={}",
+            "display_stats/s out_eof_while_inflight={} pending_same_half_overwrite={} m2m_copy_start={} stale_window_tx={} wait_on_miss_out_first={} wait_on_miss_done_hint_first={} wait_total_us={} wait_avg_us={}",
             stats.out_eof_while_inflight_count,
             stats.pending_same_half_overwrite_count,
             stats.m2m_copy_start_count,
-            stats.stale_window_tx_count
+            stats.stale_window_tx_count,
+            stats.wait_on_miss_out_first_count,
+            stats.wait_on_miss_done_hint_first_count,
+            stats.wait_on_miss_wait_total_us,
+            wait_avg_us,
+        );
+        info!(
+            "isr_stats/s isr_total_us={} isr_avg_us={} out_isr_total_us={} out_isr_avg_us={} in_isr_total_us={} in_isr_avg_us={}",
+            isr_total_us,
+            isr_avg_us,
+            stats.out_isr_total_us,
+            out_isr_avg_us,
+            stats.in_isr_total_us,
+            in_isr_avg_us
         );
         Timer::after_secs(1).await;
     }

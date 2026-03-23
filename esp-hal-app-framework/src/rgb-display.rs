@@ -1,6 +1,7 @@
 use core::cell::RefCell;
 
 use critical_section::Mutex;
+use esp_hal::Blocking;
 use esp_hal::dma::{
     self, AnyGdmaChannel, BurstConfig, DmaChannelConvert, DmaDescriptor, DmaEligible, DmaTxBuffer,
     ExternalBurstConfig, InternalBurstConfig, Mem2Mem, Preparation, SimpleMem2Mem,
@@ -9,10 +10,11 @@ use esp_hal::dma::{
 use esp_hal::handler;
 use esp_hal::interrupt::{self, Priority};
 use esp_hal::lcd_cam::lcd::dpi::{Dpi, DpiTransfer};
-use esp_hal::peripherals::{Interrupt, DMA};
+use esp_hal::peripherals::{DMA, Interrupt};
 use esp_hal::ram;
 use esp_hal::system::Cpu;
-use esp_hal::Blocking;
+#[cfg(feature = "rgb-stats")]
+use esp_hal::time::Instant;
 use static_cell::StaticCell;
 
 pub enum FrameMode {
@@ -186,12 +188,12 @@ pub struct RGBDisplayDmaStorage<
 }
 
 impl<
-        const BOUNCE_BYTES: usize,
-        const BOUNCE_OUT_DESC_COUNT: usize,
-        const M2M_DESC_COUNT: usize,
-        const PRECOMPUTED_SRC_PTR_COUNT: usize,
-        const PRECOMPUTED_DST_PTR_COUNT: usize,
-    >
+    const BOUNCE_BYTES: usize,
+    const BOUNCE_OUT_DESC_COUNT: usize,
+    const M2M_DESC_COUNT: usize,
+    const PRECOMPUTED_SRC_PTR_COUNT: usize,
+    const PRECOMPUTED_DST_PTR_COUNT: usize,
+>
     RGBDisplayDmaStorage<
         BOUNCE_BYTES,
         BOUNCE_OUT_DESC_COUNT,
@@ -261,6 +263,24 @@ pub struct RGBDisplayStats {
     ///
     /// This is the direct "real miss" signal for PSRAM->RAM refill deadlines.
     pub stale_window_tx_count: u32,
+    /// Count of WaitOnMiss miss rendezvous cases where OUT EOF observed the miss
+    /// before the inbound done hint arrived.
+    pub wait_on_miss_out_first_count: u32,
+    /// Count of WaitOnMiss miss rendezvous cases where the inbound done hint was
+    /// observed before OUT EOF detected the miss.
+    pub wait_on_miss_done_hint_first_count: u32,
+    /// Total time spent blocked inside WaitOnMiss completion waits, in us.
+    pub wait_on_miss_wait_total_us: u64,
+    /// Number of WaitOnMiss completion waits that were timed.
+    pub wait_on_miss_wait_count: u32,
+    /// Total time spent inside the OUT EOF ISR, in us.
+    pub out_isr_total_us: u64,
+    /// Number of OUT EOF ISR invocations timed.
+    pub out_isr_count: u32,
+    /// Total time spent inside the IN DMA ISR, in us.
+    pub in_isr_total_us: u64,
+    /// Number of IN DMA ISR invocations timed.
+    pub in_isr_count: u32,
 }
 
 #[cfg(not(feature = "rgb-stats"))]
@@ -316,6 +336,8 @@ struct DisplayState {
     window_index_next: usize,
     work_pending: bool,
     refill_wait_on_miss: bool,
+    wait_on_miss_out_seen: bool,
+    wait_on_miss_in_done_seen: bool,
     #[cfg(feature = "rgb-stats")]
     stats: RGBDisplayStats,
 }
@@ -515,13 +537,15 @@ impl RGBDisplayDriver {
                 window_index_next: 2 % windows_len,
                 work_pending: false,
                 refill_wait_on_miss: matches!(cfg.refill_policy, RefillPolicy::WaitOnMiss),
+                wait_on_miss_out_seen: false,
+                wait_on_miss_in_done_seen: false,
                 #[cfg(feature = "rgb-stats")]
                 stats: RGBDisplayStats::default(),
             });
         });
 
         bind_out_eof_interrupt();
-        bind_in_suc_eof_interrupt();
+        bind_in_interrupts();
 
         Ok(Self {
             dpi: Some(resources.dpi),
@@ -554,9 +578,9 @@ impl RGBDisplayDriver {
         });
 
         clear_out_eof_interrupt();
-        clear_in_suc_eof_interrupt();
+        clear_in_interrupts();
         enable_out_eof_interrupt();
-        enable_in_suc_eof_interrupt();
+        enable_in_interrupts();
 
         match dpi.send(true, tx_buf) {
             Ok(transfer) => {
@@ -572,9 +596,9 @@ impl RGBDisplayDriver {
     }
 
     pub fn stop(&mut self) {
-        disable_in_suc_eof_interrupt();
+        disable_in_interrupts();
         disable_out_eof_interrupt();
-        clear_in_suc_eof_interrupt();
+        clear_in_interrupts();
         clear_out_eof_interrupt();
 
         if let Some(transfer) = self.transfer.take() {
@@ -701,6 +725,7 @@ fn reset_runtime_state(state: &mut DisplayState) {
     state.in_flight_target_buffer = 0;
     state.in_flight_window_index = 0;
     state.loaded_window_for_buffer = [0, 1];
+    clear_wait_on_miss_flags(state);
     #[cfg(feature = "rgb-stats")]
     {
         state.stats = RGBDisplayStats::default();
@@ -880,6 +905,8 @@ fn start_copy_to_bounce_buffer(
     target_buffer_index: usize,
     window_index: usize,
 ) {
+    clear_wait_on_miss_flags(state);
+
     let frame_idx = state.active_frame_idx as usize;
     assert!(frame_idx < state.frame_count as usize);
     let frame_ptr = state.frame_ptrs[frame_idx];
@@ -1017,6 +1044,81 @@ fn try_start_pending_copy(state: &mut DisplayState) {
     start_copy_to_bounce_buffer(state, target_buffer, window_index);
 }
 
+#[inline(always)]
+fn clear_wait_on_miss_flags(state: &mut DisplayState) {
+    state.wait_on_miss_out_seen = false;
+    state.wait_on_miss_in_done_seen = false;
+}
+
+#[inline(always)]
+fn complete_in_flight_copy(state: &mut DisplayState) {
+    if let Some(transfer) = state.in_flight_copy.take() {
+        #[cfg(feature = "rgb-stats")]
+        let t0 = Instant::now();
+
+        let _ = transfer.wait();
+
+        #[cfg(feature = "rgb-stats")]
+        {
+            let elapsed_us = t0.elapsed().as_micros();
+            state.stats.wait_on_miss_wait_total_us = state
+                .stats
+                .wait_on_miss_wait_total_us
+                .wrapping_add(elapsed_us);
+            state.stats.wait_on_miss_wait_count =
+                state.stats.wait_on_miss_wait_count.wrapping_add(1);
+        }
+
+        state.loaded_window_for_buffer[state.in_flight_target_buffer] =
+            state.in_flight_window_index;
+    }
+    clear_wait_on_miss_flags(state);
+}
+
+#[inline(always)]
+fn on_wait_on_miss_out_event(state: &mut DisplayState) {
+    if state.wait_on_miss_in_done_seen {
+        stats_inc!(state, wait_on_miss_done_hint_first_count);
+        complete_in_flight_copy(state);
+    } else {
+        state.wait_on_miss_out_seen = true;
+    }
+}
+
+#[inline(always)]
+fn on_wait_on_miss_in_done_event(state: &mut DisplayState) {
+    if state.wait_on_miss_out_seen {
+        stats_inc!(state, wait_on_miss_out_first_count);
+        complete_in_flight_copy(state);
+    } else {
+        state.wait_on_miss_in_done_seen = true;
+    }
+}
+
+#[cfg(feature = "rgb-stats")]
+#[inline(always)]
+fn record_out_isr_time(elapsed_us: u64) {
+    critical_section::with(|cs| {
+        let mut guard = DISPLAY_STATE.borrow_ref_mut(cs);
+        if let Some(state) = guard.as_mut() {
+            state.stats.out_isr_total_us = state.stats.out_isr_total_us.wrapping_add(elapsed_us);
+            stats_inc!(state, out_isr_count);
+        }
+    });
+}
+
+#[cfg(feature = "rgb-stats")]
+#[inline(always)]
+fn record_in_isr_time(elapsed_us: u64) {
+    critical_section::with(|cs| {
+        let mut guard = DISPLAY_STATE.borrow_ref_mut(cs);
+        if let Some(state) = guard.as_mut() {
+            state.stats.in_isr_total_us = state.stats.in_isr_total_us.wrapping_add(elapsed_us);
+            stats_inc!(state, in_isr_count);
+        }
+    });
+}
+
 fn enable_out_eof_interrupt() {
     DMA::regs()
         .ch(2)
@@ -1030,12 +1132,12 @@ fn enable_out_eof_interrupt() {
     .unwrap();
 }
 
-fn enable_in_suc_eof_interrupt() {
+fn enable_in_interrupts() {
     DMA::regs()
         .ch(0)
         .in_int()
         .ena()
-        .modify(|_, w| w.in_suc_eof().bit(true));
+        .modify(|_, w| w.in_suc_eof().bit(true).in_done().bit(true));
     interrupt::enable(
         Interrupt::DMA_IN_CH0,
         dma_inbound_interrupt_handler.priority(),
@@ -1052,12 +1154,12 @@ fn disable_out_eof_interrupt() {
     interrupt::disable(Cpu::current(), Interrupt::DMA_OUT_CH2);
 }
 
-fn disable_in_suc_eof_interrupt() {
+fn disable_in_interrupts() {
     DMA::regs()
         .ch(0)
         .in_int()
         .ena()
-        .modify(|_, w| w.in_suc_eof().bit(false));
+        .modify(|_, w| w.in_suc_eof().bit(false).in_done().bit(false));
     interrupt::disable(Cpu::current(), Interrupt::DMA_IN_CH0);
 }
 
@@ -1069,12 +1171,12 @@ fn clear_out_eof_interrupt() {
         .write(|w| w.out_eof().bit(true));
 }
 
-fn clear_in_suc_eof_interrupt() {
+fn clear_in_interrupts() {
     DMA::regs()
         .ch(0)
         .in_int()
         .clr()
-        .write(|w| w.in_suc_eof().bit(true));
+        .write(|w| w.in_suc_eof().bit(true).in_done().bit(true));
 }
 
 fn bind_out_eof_interrupt() {
@@ -1087,111 +1189,135 @@ fn bind_out_eof_interrupt() {
     clear_out_eof_interrupt();
 }
 
-fn bind_in_suc_eof_interrupt() {
+fn bind_in_interrupts() {
     unsafe {
         interrupt::bind_interrupt(
             Interrupt::DMA_IN_CH0,
             dma_inbound_interrupt_handler.handler(),
         );
     }
-    clear_in_suc_eof_interrupt();
+    clear_in_interrupts();
 }
 
 #[handler(priority = Priority::Priority2)]
 #[ram]
 fn dma_outbound_interrupt_handler() {
-    let out_int = DMA::regs().ch(2).out_int();
-    if !out_int.st().read().out_eof().bit_is_set() {
-        return;
-    }
-    out_int.clr().write(|w| w.out_eof().bit(true));
+    #[cfg(feature = "rgb-stats")]
+    let isr_start = Instant::now();
 
-    let eof_desc_addr = DMA::regs()
-        .ch(2)
-        .out_eof_des_addr()
-        .read()
-        .out_eof_des_addr()
-        .bits() as *const DmaDescriptor;
-
-    critical_section::with(|cs| {
-        let mut guard = DISPLAY_STATE.borrow_ref_mut(cs);
-        let Some(state) = guard.as_mut() else {
-            return;
-        };
-
-        let desc_offset = unsafe { eof_desc_addr.offset_from(state.out_desc_start) };
-        if desc_offset < 0 {
+    (|| {
+        let out_int = DMA::regs().ch(2).out_int();
+        if !out_int.st().read().out_eof().bit_is_set() {
             return;
         }
-        let desc_offset = desc_offset as usize;
-        if desc_offset >= state.out_desc_count {
-            return;
-        }
+        out_int.clr().write(|w| w.out_eof().bit(true));
 
-        let window_sent_index = desc_offset / state.out_desc_per_window;
-        let sent_buffer = window_sent_index % 2;
-        let refill_window_index = (window_sent_index + 2) % state.windows_len;
+        let eof_desc_addr = DMA::regs()
+            .ch(2)
+            .out_eof_des_addr()
+            .read()
+            .out_eof_des_addr()
+            .bits() as *const DmaDescriptor;
 
-        if state.loaded_window_for_buffer[sent_buffer] != window_sent_index {
-            stats_inc!(state, stale_window_tx_count);
-        }
+        critical_section::with(|cs| {
+            let mut guard = DISPLAY_STATE.borrow_ref_mut(cs);
+            let Some(state) = guard.as_mut() else {
+                return;
+            };
 
-        if refill_window_index == 0 {
-            if let Some(pending) = state.pending_frame_idx.take() {
-                state.active_frame_idx = pending;
-            }
-        }
-
-        if state.work_pending && state.window_index_next % 2 == sent_buffer {
-            // Older pending target for this same bounce half was superseded by
-            // a newer phase-derived target before it was consumed.
-            stats_inc!(state, pending_same_half_overwrite_count);
-        }
-
-        state.window_index_next = refill_window_index;
-        state.work_pending = true;
-
-        if state.in_flight_copy.is_some() {
-            // OUT EOF arrived while mem2mem is still marked in-flight.
-            // This is an overlap/jitter signal in the dual-ISR architecture.
-            stats_inc!(state, out_eof_while_inflight_count);
-
-            if state.refill_wait_on_miss {
-                if let Some(transfer) = state.in_flight_copy.take() {
-                    let _ = transfer.wait();
-                    state.loaded_window_for_buffer[state.in_flight_target_buffer] =
-                        state.in_flight_window_index;
-                }
-            } else {
+            let desc_offset = unsafe { eof_desc_addr.offset_from(state.out_desc_start) };
+            if desc_offset < 0 {
                 return;
             }
-        }
+            let desc_offset = desc_offset as usize;
+            if desc_offset >= state.out_desc_count {
+                return;
+            }
 
-        try_start_pending_copy(state);
-    });
+            let window_sent_index = desc_offset / state.out_desc_per_window;
+            let sent_buffer = window_sent_index % 2;
+            let refill_window_index = (window_sent_index + 2) % state.windows_len;
+
+            if state.loaded_window_for_buffer[sent_buffer] != window_sent_index {
+                stats_inc!(state, stale_window_tx_count);
+            }
+
+            if refill_window_index == 0 {
+                if let Some(pending) = state.pending_frame_idx.take() {
+                    state.active_frame_idx = pending;
+                }
+            }
+
+            if state.work_pending && state.window_index_next % 2 == sent_buffer {
+                stats_inc!(state, pending_same_half_overwrite_count);
+            }
+
+            state.window_index_next = refill_window_index;
+            state.work_pending = true;
+
+            if state.in_flight_copy.is_some() {
+                stats_inc!(state, out_eof_while_inflight_count);
+
+                if state.refill_wait_on_miss {
+                    on_wait_on_miss_out_event(state);
+                } else {
+                    return;
+                }
+            }
+
+            try_start_pending_copy(state);
+        });
+    })();
+
+    #[cfg(feature = "rgb-stats")]
+    record_out_isr_time(isr_start.elapsed().as_micros());
 }
 
 #[handler(priority = Priority::Priority3)]
 #[ram]
 fn dma_inbound_interrupt_handler() {
-    let in_int = DMA::regs().ch(0).in_int();
-    if !in_int.st().read().in_suc_eof().bit_is_set() {
-        return;
-    }
-    in_int.clr().write(|w| w.in_suc_eof().bit(true));
+    #[cfg(feature = "rgb-stats")]
+    let isr_start = Instant::now();
 
-    critical_section::with(|cs| {
-        let mut guard = DISPLAY_STATE.borrow_ref_mut(cs);
-        let Some(state) = guard.as_mut() else {
+    (|| {
+        let in_int = DMA::regs().ch(0).in_int();
+        let status = in_int.st().read();
+        let in_done = status.in_done().bit_is_set();
+        let in_suc_eof = status.in_suc_eof().bit_is_set();
+
+        if !in_done && !in_suc_eof {
             return;
-        };
-
-        if state.in_flight_copy.is_some() {
-            let _ = state.in_flight_copy.take();
-            state.loaded_window_for_buffer[state.in_flight_target_buffer] =
-                state.in_flight_window_index;
         }
+        in_int
+            .clr()
+            .write(|w| w.in_done().bit(in_done).in_suc_eof().bit(in_suc_eof));
 
-        try_start_pending_copy(state);
-    });
+        critical_section::with(|cs| {
+            let mut guard = DISPLAY_STATE.borrow_ref_mut(cs);
+            let Some(state) = guard.as_mut() else {
+                return;
+            };
+
+            if state.in_flight_copy.is_none() {
+                clear_wait_on_miss_flags(state);
+                return;
+            }
+
+            if in_done && state.refill_wait_on_miss {
+                on_wait_on_miss_in_done_event(state);
+            }
+
+            if state.in_flight_copy.is_some() && in_suc_eof && !state.wait_on_miss_out_seen {
+                let _ = state.in_flight_copy.take();
+                state.loaded_window_for_buffer[state.in_flight_target_buffer] =
+                    state.in_flight_window_index;
+                clear_wait_on_miss_flags(state);
+            }
+
+            try_start_pending_copy(state);
+        });
+    })();
+
+    #[cfg(feature = "rgb-stats")]
+    record_in_isr_time(isr_start.elapsed().as_micros());
 }

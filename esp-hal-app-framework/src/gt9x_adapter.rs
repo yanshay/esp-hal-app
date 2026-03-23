@@ -19,8 +19,8 @@ pub struct Gt9xAdapterConfig {
 impl Default for Gt9xAdapterConfig {
     fn default() -> Self {
         Self {
-            polling_timeout: Duration::from_millis(25),
-            missing_points_before_release: 5,
+            polling_timeout: Duration::from_millis(40),
+            missing_points_before_release: 2,
             coordinate_mapper: touch_identity_mapping,
         }
     }

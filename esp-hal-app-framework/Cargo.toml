@@ -34,7 +34,7 @@ esp32s3 = { version = "0.34.0" }
 xtensa-lx-rt = { version = "0.21.0", features = ["float-save-restore"] }
 esp-hal = { version = "1.0.0", features = ["unstable"] }
 esp-backtrace = { version = "0.18.0", features = [ "panic-handler", "println" ] }
-esp-println = { version = "0.16.0", default-features = false, features = ["critical-section", "colors", "auto"] }
+esp-println = { version = "0.16.0", default-features = false, features = ["colors", "auto"] }
 esp-rtos = { version = "0.2.0", features = ["embassy", "esp-alloc", "esp-radio", "alloc"] }
 esp-radio = { version = "0.17.0", features = ["wifi", "esp-alloc"]}
 esp-partition-table = { version = "0.1.3" }
