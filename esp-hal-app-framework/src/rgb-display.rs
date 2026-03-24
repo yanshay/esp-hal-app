@@ -13,7 +13,6 @@ use esp_hal::lcd_cam::lcd::dpi::{Dpi, DpiTransfer};
 use esp_hal::peripherals::{DMA, Interrupt};
 use esp_hal::ram;
 use esp_hal::system::Cpu;
-#[cfg(feature = "rgb-stats")]
 use esp_hal::time::Instant;
 use static_cell::StaticCell;
 
@@ -59,6 +58,18 @@ pub struct RGBDisplayConfig {
     pub height: usize,
     pub bytes_per_pixel: usize,
     pub rows_per_window: usize,
+    /// Pixel clock in Hz.
+    ///
+    /// This should match the value passed to `dpi::Config::with_frequency(...)`.
+    pub pixel_clock_hz: u32,
+    /// Total pixels per line, including blanking.
+    ///
+    /// This should match `dpi::FrameTiming::horizontal_total_width`.
+    pub horizontal_total_width: u32,
+    /// Total lines per frame, including blanking.
+    ///
+    /// This should match `dpi::FrameTiming::vertical_total_height`.
+    pub vertical_total_height: u32,
     pub burst: BurstConfig,
     pub flush: FlushPolicy,
     pub refill_policy: RefillPolicy,
@@ -97,6 +108,18 @@ impl RGBDisplayConfig {
             self.burst.max_compatible_chunk_size(),
             false,
         )
+    }
+
+    pub const fn wait_on_miss_timeout_us(&self) -> u64 {
+        let reuse_rows = (self.rows_per_window * 2) as u64;
+        let frame_time_us = self.frame_time_us() as u64;
+        let panel_rows = self.height as u64;
+        (frame_time_us * reuse_rows).div_ceil(panel_rows)
+    }
+
+    pub const fn frame_time_us(&self) -> u32 {
+        ((1_000_000u64 * self.horizontal_total_width as u64 * self.vertical_total_height as u64)
+            / self.pixel_clock_hz as u64) as u32
     }
 }
 
@@ -266,13 +289,16 @@ pub struct RGBDisplayStats {
     /// Count of WaitOnMiss miss rendezvous cases where OUT EOF observed the miss
     /// before the inbound done hint arrived.
     pub wait_on_miss_out_first_count: u32,
-    /// Count of WaitOnMiss miss rendezvous cases where the inbound done hint was
-    /// observed before OUT EOF detected the miss.
+    /// Count of WaitOnMiss miss rendezvous cases where the optional inbound done
+    /// hint was observed before OUT EOF detected the miss.
+    #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
     pub wait_on_miss_done_hint_first_count: u32,
     /// Total time spent blocked inside WaitOnMiss completion waits, in us.
     pub wait_on_miss_wait_total_us: u64,
     /// Number of WaitOnMiss completion waits that were timed.
     pub wait_on_miss_wait_count: u32,
+    /// Number of WaitOnMiss waits that exceeded the timeout threshold.
+    pub wait_on_miss_timeout_count: u32,
     /// Total time spent inside the OUT EOF ISR, in us.
     pub out_isr_total_us: u64,
     /// Number of OUT EOF ISR invocations timed.
@@ -336,7 +362,9 @@ struct DisplayState {
     window_index_next: usize,
     work_pending: bool,
     refill_wait_on_miss: bool,
+    wait_on_miss_timeout_us: u64,
     wait_on_miss_out_seen: bool,
+    #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
     wait_on_miss_in_done_seen: bool,
     #[cfg(feature = "rgb-stats")]
     stats: RGBDisplayStats,
@@ -537,7 +565,9 @@ impl RGBDisplayDriver {
                 window_index_next: 2 % windows_len,
                 work_pending: false,
                 refill_wait_on_miss: matches!(cfg.refill_policy, RefillPolicy::WaitOnMiss),
+                wait_on_miss_timeout_us: cfg.wait_on_miss_timeout_us(),
                 wait_on_miss_out_seen: false,
+                #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
                 wait_on_miss_in_done_seen: false,
                 #[cfg(feature = "rgb-stats")]
                 stats: RGBDisplayStats::default(),
@@ -742,6 +772,10 @@ fn validate_config(cfg: &RGBDisplayConfig) -> Result<(), RGBDisplayError> {
         || cfg.height == 0
         || cfg.bytes_per_pixel == 0
         || cfg.rows_per_window == 0
+        || cfg.pixel_clock_hz == 0
+        || cfg.horizontal_total_width == 0
+        || cfg.vertical_total_height == 0
+        || cfg.wait_on_miss_timeout_us() == 0
         || !cfg.height.is_multiple_of(cfg.rows_per_window)
     {
         return Err(RGBDisplayError::InvalidConfig);
@@ -1047,16 +1081,25 @@ fn try_start_pending_copy(state: &mut DisplayState) {
 #[inline(always)]
 fn clear_wait_on_miss_flags(state: &mut DisplayState) {
     state.wait_on_miss_out_seen = false;
-    state.wait_on_miss_in_done_seen = false;
+    #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
+    {
+        state.wait_on_miss_in_done_seen = false;
+    }
 }
 
 #[inline(always)]
 fn complete_in_flight_copy(state: &mut DisplayState) {
     if let Some(transfer) = state.in_flight_copy.take() {
-        #[cfg(feature = "rgb-stats")]
         let t0 = Instant::now();
 
-        let _ = transfer.wait();
+        let transfer = transfer;
+        let mut timed_out = false;
+        while !transfer.is_done() {
+            if t0.elapsed().as_micros() >= state.wait_on_miss_timeout_us {
+                timed_out = true;
+                break;
+            }
+        }
 
         #[cfg(feature = "rgb-stats")]
         {
@@ -1067,24 +1110,39 @@ fn complete_in_flight_copy(state: &mut DisplayState) {
                 .wrapping_add(elapsed_us);
             state.stats.wait_on_miss_wait_count =
                 state.stats.wait_on_miss_wait_count.wrapping_add(1);
+            if timed_out {
+                state.stats.wait_on_miss_timeout_count =
+                    state.stats.wait_on_miss_timeout_count.wrapping_add(1);
+            }
         }
 
-        state.loaded_window_for_buffer[state.in_flight_target_buffer] =
-            state.in_flight_window_index;
+        if !timed_out {
+            state.loaded_window_for_buffer[state.in_flight_target_buffer] =
+                state.in_flight_window_index;
+        }
     }
     clear_wait_on_miss_flags(state);
 }
 
 #[inline(always)]
 fn on_wait_on_miss_out_event(state: &mut DisplayState) {
-    if state.wait_on_miss_in_done_seen {
-        stats_inc!(state, wait_on_miss_done_hint_first_count);
+    #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
+    {
+        if state.wait_on_miss_in_done_seen {
+            stats_inc!(state, wait_on_miss_done_hint_first_count);
+            complete_in_flight_copy(state);
+        } else {
+            state.wait_on_miss_out_seen = true;
+        }
+    }
+
+    #[cfg(not(feature = "rgb-wait-on-miss-done-hint-on"))]
+    {
         complete_in_flight_copy(state);
-    } else {
-        state.wait_on_miss_out_seen = true;
     }
 }
 
+#[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
 #[inline(always)]
 fn on_wait_on_miss_in_done_event(state: &mut DisplayState) {
     if state.wait_on_miss_out_seen {
@@ -1133,11 +1191,18 @@ fn enable_out_eof_interrupt() {
 }
 
 fn enable_in_interrupts() {
+    #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
     DMA::regs()
         .ch(0)
         .in_int()
         .ena()
         .modify(|_, w| w.in_suc_eof().bit(true).in_done().bit(true));
+    #[cfg(not(feature = "rgb-wait-on-miss-done-hint-on"))]
+    DMA::regs()
+        .ch(0)
+        .in_int()
+        .ena()
+        .modify(|_, w| w.in_suc_eof().bit(true).in_done().bit(false));
     interrupt::enable(
         Interrupt::DMA_IN_CH0,
         dma_inbound_interrupt_handler.priority(),
@@ -1172,11 +1237,18 @@ fn clear_out_eof_interrupt() {
 }
 
 fn clear_in_interrupts() {
+    #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
     DMA::regs()
         .ch(0)
         .in_int()
         .clr()
         .write(|w| w.in_suc_eof().bit(true).in_done().bit(true));
+    #[cfg(not(feature = "rgb-wait-on-miss-done-hint-on"))]
+    DMA::regs()
+        .ch(0)
+        .in_int()
+        .clr()
+        .write(|w| w.in_suc_eof().bit(true).in_done().bit(false));
 }
 
 fn bind_out_eof_interrupt() {
@@ -1282,15 +1354,27 @@ fn dma_inbound_interrupt_handler() {
     (|| {
         let in_int = DMA::regs().ch(0).in_int();
         let status = in_int.st().read();
+        #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
         let in_done = status.in_done().bit_is_set();
         let in_suc_eof = status.in_suc_eof().bit_is_set();
 
+        #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
         if !in_done && !in_suc_eof {
             return;
         }
+        #[cfg(not(feature = "rgb-wait-on-miss-done-hint-on"))]
+        if !in_suc_eof {
+            return;
+        }
+
+        #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
         in_int
             .clr()
             .write(|w| w.in_done().bit(in_done).in_suc_eof().bit(in_suc_eof));
+        #[cfg(not(feature = "rgb-wait-on-miss-done-hint-on"))]
+        in_int
+            .clr()
+            .write(|w| w.in_done().bit(false).in_suc_eof().bit(in_suc_eof));
 
         critical_section::with(|cs| {
             let mut guard = DISPLAY_STATE.borrow_ref_mut(cs);
@@ -1303,6 +1387,7 @@ fn dma_inbound_interrupt_handler() {
                 return;
             }
 
+            #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
             if in_done && state.refill_wait_on_miss {
                 on_wait_on_miss_in_done_event(state);
             }

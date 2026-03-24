@@ -32,10 +32,13 @@ use crate::{
 };
 
 const DISP_W: usize = 800;
+const DISP_W_TOTAL: usize = 808;
 const DISP_H: usize = 480;
+const DISP_H_TOTAL: usize = 488;
 const DISP_BPP: usize = 2;
 const DISP_ROWS: usize = 8;
 const DISP_FRAME_BYTES: usize = DISP_W * DISP_H * DISP_BPP;
+const DISP_PCLK_HZ: u32 = 13_800_000;
 
 const DISP_BOUNCE_BYTES: usize = display_bounce_bytes(DISP_W, DISP_BPP, DISP_ROWS);
 const DISP_BOUNCE_OUT_DESC_COUNT: usize =
@@ -84,8 +87,9 @@ async fn stats_task() {
         } else {
             isr_total_us / isr_count
         };
+        #[cfg(feature = "rgb-wait-on-miss-done-hint-on")]
         info!(
-            "display_stats/s out_eof_while_inflight={} pending_same_half_overwrite={} m2m_copy_start={} stale_window_tx={} wait_on_miss_out_first={} wait_on_miss_done_hint_first={} wait_total_us={} wait_avg_us={}",
+            "display_stats/s out_eof_while_inflight={} pending_same_half_overwrite={} m2m_copy_start={} stale_window_tx={} wait_on_miss_out_first={} wait_on_miss_done_hint_first={} wait_total_us={} wait_avg_us={} wait_timeout_count={}",
             stats.out_eof_while_inflight_count,
             stats.pending_same_half_overwrite_count,
             stats.m2m_copy_start_count,
@@ -94,6 +98,18 @@ async fn stats_task() {
             stats.wait_on_miss_done_hint_first_count,
             stats.wait_on_miss_wait_total_us,
             wait_avg_us,
+            stats.wait_on_miss_timeout_count,
+        );
+        #[cfg(not(feature = "rgb-wait-on-miss-done-hint-on"))]
+        info!(
+            "display_stats/s out_eof_while_inflight={} pending_same_half_overwrite={} m2m_copy_start={} stale_window_tx={} wait_total_us={} wait_avg_us={} wait_timeout_count={}",
+            stats.out_eof_while_inflight_count,
+            stats.pending_same_half_overwrite_count,
+            stats.m2m_copy_start_count,
+            stats.stale_window_tx_count,
+            stats.wait_on_miss_wait_total_us,
+            wait_avg_us,
+            stats.wait_on_miss_timeout_count,
         );
         info!(
             "isr_stats/s isr_total_us={} isr_avg_us={} out_isr_total_us={} out_isr_avg_us={} in_isr_total_us={} in_isr_avg_us={}",
@@ -104,7 +120,7 @@ async fn stats_task() {
             stats.in_isr_total_us,
             in_isr_avg_us
         );
-        Timer::after_secs(1).await;
+        Timer::after_secs(10).await;
     }
 }
 
@@ -388,17 +404,17 @@ where
                 polarity: esp_hal::lcd_cam::lcd::Polarity::IdleLow,
                 phase: esp_hal::lcd_cam::lcd::Phase::ShiftHigh,
             })
-            .with_frequency(Rate::from_hz(13_800_000))
+            .with_frequency(Rate::from_hz(DISP_PCLK_HZ))
             .with_format(Format {
                 enable_2byte_mode: true,
                 ..Default::default()
             })
             .with_timing(FrameTiming {
                 horizontal_active_width: DISP_W,
-                horizontal_total_width: 808,
+                horizontal_total_width: DISP_W_TOTAL,
                 horizontal_blank_front_porch: 8,
                 vertical_active_height: DISP_H,
-                vertical_total_height: 488,
+                vertical_total_height: DISP_H_TOTAL,
                 vertical_blank_front_porch: 0,
                 hsync_width: 4,
                 vsync_width: 4,
@@ -437,6 +453,9 @@ where
             height: DISP_H,
             bytes_per_pixel: DISP_BPP,
             rows_per_window: DISP_ROWS,
+            pixel_clock_hz: DISP_PCLK_HZ,
+            horizontal_total_width: DISP_W_TOTAL as u32,
+            vertical_total_height: DISP_H_TOTAL as u32,
             burst: BurstConfig {
                 internal_memory: InternalBurstConfig::Enabled,
                 external_memory: ExternalBurstConfig::Size64,
