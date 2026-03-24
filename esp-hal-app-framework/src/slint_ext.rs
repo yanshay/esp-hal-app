@@ -46,11 +46,18 @@ impl McuWindow {
     /// Return true if something was redrawn.
     pub fn draw_if_needed(
         &self,
-        render_callback: impl FnOnce(&slint::platform::software_renderer::SoftwareRenderer),
+        render_callback: impl FnOnce(&slint::platform::software_renderer::SoftwareRenderer) -> bool,
     ) -> bool {
-        if self.needs_redraw.replace(false) {
-            render_callback(&self.renderer);
-            true
+        if self.needs_redraw.get() {
+            let drawn = render_callback(&self.renderer);
+            if drawn {
+                // update slint that no need to redraw until next change
+                self.needs_redraw.replace(false);
+            } else {
+                // leave slint with a need to redraw + wakeup the ui_loop to try again next round
+                self.redraw_signal.signal(1); // wake up ui_loop to try drawing Again
+            }
+            drawn
         } else {
             false
         }

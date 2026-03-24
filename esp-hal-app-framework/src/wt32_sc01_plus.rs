@@ -49,7 +49,7 @@ impl<DM> UiRenderBackend for WT32RenderBackend<DM>
 where
     DM: esp_hal::DriverMode,
 {
-    fn render(&mut self, renderer: &slint::platform::software_renderer::SoftwareRenderer) {
+    fn render(&mut self, renderer: &slint::platform::software_renderer::SoftwareRenderer) -> bool {
         let start_graphics_time = embassy_time::Instant::now();
 
         // For single line rendering (2/2)
@@ -59,6 +59,7 @@ where
         unsafe {
             GRAPHICS_TOTAL += graphics_time.as_micros();
         }
+        true
     }
 }
 

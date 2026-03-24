@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub trait UiRenderBackend {
-    fn render(&mut self, renderer: &slint::platform::software_renderer::SoftwareRenderer);
+    fn render(&mut self, renderer: &slint::platform::software_renderer::SoftwareRenderer) -> bool;
 }
 
 pub async fn event_loop<T, R, B>(
@@ -67,7 +67,7 @@ pub async fn event_loop<T, R, B>(
         slint::platform::update_timers_and_animations();
 
         window.draw_if_needed(|renderer| {
-            render_backend.render(renderer);
+            render_backend.render(renderer)
         });
 
         let async_res;

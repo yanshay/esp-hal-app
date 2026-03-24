@@ -36,7 +36,7 @@ const DISP_W_TOTAL: usize = 808;
 const DISP_H: usize = 480;
 const DISP_H_TOTAL: usize = 488;
 const DISP_BPP: usize = 2;
-const DISP_ROWS: usize = 8;
+const DISP_ROWS: usize = 16;
 const DISP_FRAME_BYTES: usize = DISP_W * DISP_H * DISP_BPP;
 const DISP_PCLK_HZ: u32 = 13_800_000;
 
@@ -127,10 +127,12 @@ async fn stats_task() {
 pub struct Jc8048w550cRenderBackend {
     display: RGBDisplayDriver,
     line_buffer: &'static mut AlignedLineBuffer,
+    // window: Rc<McuWindow>,
+    double_buffering: bool,
 }
 
 impl UiRenderBackend for Jc8048w550cRenderBackend {
-    fn render(&mut self, renderer: &slint::platform::software_renderer::SoftwareRenderer) {
+    fn render(&mut self, renderer: &slint::platform::software_renderer::SoftwareRenderer) -> bool {
         if let Some(mut frame_guard) = self.display.acquire_writable_frame() {
             struct FrameLineBuffer<'a> {
                 frame_buffer: &'a mut [slint::platform::software_renderer::Rgb565Pixel],
@@ -174,6 +176,13 @@ impl UiRenderBackend for Jc8048w550cRenderBackend {
             frame_guard
                 .present()
                 .expect("Failed to present RGB display frame");
+                // if self.double_buffering {
+                //     self.window.request_redraw();
+                // }
+            true
+        } else {
+            false // can't draw now, so skip drawing and return nothing was drawn, this will make slint_ext release the ui_loop right after to draw again
+            // self.window.request_redraw();
         }
     }
 }
@@ -285,6 +294,11 @@ where
 
 type InitDone = Signal<CriticalSectionRawMutex, Result<(), String>>;
 
+pub enum Jc8048w550cFrameBuffers {
+    Single(&'static mut [u8]),
+    Double(&'static mut [u8], &'static mut [u8]),
+}
+
 pub struct Jc8048w550c {
     init_done: &'static InitDone,
 }
@@ -294,7 +308,7 @@ impl Jc8048w550c {
     pub fn new<'a, CHLCD, CHM2M, SPIM2M, P, S, CHSD>(
         display_peripherals: Jc8048w550cDisplayPeripherals<CHLCD, CHM2M, SPIM2M, P>,
         sdcard_peripherals: Jc8048w550cSDCardPeripherals<S, CHSD>,
-        frame_buffer: &'static mut [u8],
+        frame_buffers: Jc8048w550cFrameBuffers,
         touch_config: Gt9xAdapterConfig,
         framework: Rc<RefCell<Framework>>,
     ) -> (
@@ -317,7 +331,7 @@ impl Jc8048w550c {
         let init_done = mk_static!(InitDone, InitDone::new());
         let runner = Jc8048w550cRunner {
             peripherals: Some(display_peripherals),
-            frame_buffer: Some(frame_buffer),
+            frame_buffers: Some(frame_buffers),
             touch_config,
             framework,
             init_done,
@@ -359,7 +373,7 @@ where
     P: esp_hal::i2c::master::Instance + 'static,
 {
     peripherals: Option<Jc8048w550cDisplayPeripherals<CHLCD, CHM2M, SPIM2M, P>>,
-    frame_buffer: Option<&'static mut [u8]>,
+    frame_buffers: Option<Jc8048w550cFrameBuffers>,
     touch_config: Gt9xAdapterConfig,
     framework: Rc<RefCell<Framework>>,
     init_done: &'static InitDone,
@@ -374,14 +388,7 @@ where
 {
     pub async fn run(&mut self) {
         let peripherals = self.peripherals.take().expect("Display peripherals missing");
-        let frame_buffer = self.frame_buffer.take().expect("Display frame buffer missing");
-
-        assert!(
-            frame_buffer.len() == DISP_FRAME_BYTES,
-            "Frame buffer length mismatch: expected {} bytes, got {}",
-            DISP_FRAME_BYTES,
-            frame_buffer.len()
-        );
+        let frame_buffers = self.frame_buffers.take().expect("Display frame buffer missing");
 
         let mut ledc = esp_hal::ledc::Ledc::new(peripherals.LEDC);
         ledc.set_global_slow_clock(esp_hal::ledc::LSGlobalClkSource::APBClk);
@@ -448,6 +455,45 @@ where
             .with_data14(peripherals.GPIO21)
             .with_data15(peripherals.GPIO14);
 
+        let (frame_mode, repaint_buffer_type, frames): (
+            FrameMode,
+            slint::platform::software_renderer::RepaintBufferType,
+            &'static mut [&'static mut [u8]],
+        ) = match frame_buffers {
+            Jc8048w550cFrameBuffers::Single(frame_buffer) => {
+                assert!(
+                    frame_buffer.len() == DISP_FRAME_BYTES,
+                    "Frame buffer length mismatch: expected {} bytes, got {}",
+                    DISP_FRAME_BYTES,
+                    frame_buffer.len()
+                );
+                (
+                    FrameMode::SingleBuffer,
+                    slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
+                    Box::leak(Box::new([frame_buffer])),
+                )
+            }
+            Jc8048w550cFrameBuffers::Double(frame_buffer_a, frame_buffer_b) => {
+                assert!(
+                    frame_buffer_a.len() == DISP_FRAME_BYTES,
+                    "Frame buffer A length mismatch: expected {} bytes, got {}",
+                    DISP_FRAME_BYTES,
+                    frame_buffer_a.len()
+                );
+                assert!(
+                    frame_buffer_b.len() == DISP_FRAME_BYTES,
+                    "Frame buffer B length mismatch: expected {} bytes, got {}",
+                    DISP_FRAME_BYTES,
+                    frame_buffer_b.len()
+                );
+                (
+                    FrameMode::DoubleBuffering,
+                    slint::platform::software_renderer::RepaintBufferType::SwappedBuffers,
+                    Box::leak(Box::new([frame_buffer_a, frame_buffer_b])),
+                )
+            }
+        };
+
         let cfg = RGBDisplayConfig {
             width: DISP_W,
             height: DISP_H,
@@ -462,12 +508,11 @@ where
             },
             flush: FlushPolicy::Enabled,
             refill_policy: RefillPolicy::WaitOnMiss,
-            frame_mode: FrameMode::SingleBuffer,
+            frame_mode,
         };
 
         let display_dma_storage = mk_static!(DisplayDmaStorage, DisplayDmaStorage::new());
         let dma_storage = display_dma_storage.as_storage_mut();
-        let frames: &'static mut [&'static mut [u8]] = Box::leak(Box::new([frame_buffer]));
 
         let display_resources = RGBDisplayResources {
             dpi,
@@ -483,7 +528,7 @@ where
         #[cfg(feature = "rgb-stats")]
         self.framework.borrow().spawner.spawn(stats_task()).ok();
 
-        let window = McuWindow::new(slint::platform::software_renderer::RepaintBufferType::ReusedBuffer);
+        let window = McuWindow::new(repaint_buffer_type);
         window.set_size(slint::PhysicalSize::new(DISP_W as u32, DISP_H as u32));
         slint::platform::set_platform(Box::new(EspBackend {
             window: window.clone(),
@@ -498,7 +543,7 @@ where
 
         let touch_i2c = esp_hal::i2c::master::I2c::new(
             peripherals.I2Cx,
-            esp_hal::i2c::master::Config::default(),
+            esp_hal::i2c::master::Config::default().with_frequency(Rate::from_khz(400)),
         )
         .unwrap()
         .with_sda(peripherals.GPIO19)
@@ -519,6 +564,8 @@ where
         let render_backend = Jc8048w550cRenderBackend {
             display,
             line_buffer,
+            // window: window.clone(),
+            double_buffering: matches!(frame_mode, FrameMode::DoubleBuffering),
         };
         let mut backlight = Jc8048w550cBacklight::new(channel0, lstimer0);
 
