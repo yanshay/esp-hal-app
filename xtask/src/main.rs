@@ -49,6 +49,10 @@ struct OtaAndFlasherCommand {
     /// Folder to save artifacts (must exist), if not specified predefined locations are used.
     #[arg(long, short)]
     output: Option<PathBuf>,
+
+    /// Use when building to a folder under target using cargo --target-dir
+    #[arg(long)]
+    subtarget: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -204,7 +208,7 @@ fn handle_web_install(command: &OtaAndFlasherCommand) -> Result<(), String> {
 
         let bin_name = format!("{package_name}-{version}.bin");
 
-        let (_bin_size, _crc32) = espflash_gen_bin(&package_folder_path, &package_name, &web_install_folder_path, &bin_name)?;
+        let (_bin_size, _crc32) = espflash_gen_bin(&package_folder_path, &package_name, &web_install_folder_path, &bin_name, &command.subtarget)?;
 
         let manifest_new = MANIFEST_TEMPLATE_NEW.replace("{package_name}", &package_name).replace("{version}", &version.to_string()).replace("{bin_name}", &bin_name);
 
@@ -255,7 +259,7 @@ fn handle_ota(command: &OtaAndFlasherCommand) -> Result<(), String> {
         // let espflash_relative_ota_folder_path = Path::new(".").join("target").join("ota"); // espflash runs with current foder as device package
         let bin_name = format!("{package_name}-{version}.bin");
 
-        let (bin_size, crc32) = espflash_gen_bin(&package_folder_path, &package_name, &ota_folder_path, &bin_name)?;
+        let (bin_size, crc32) = espflash_gen_bin(&package_folder_path, &package_name, &ota_folder_path, &bin_name, &command.subtarget)?;
 
         // Create toml
         let ota_toml = OtaToml {
@@ -280,9 +284,14 @@ fn handle_ota(command: &OtaAndFlasherCommand) -> Result<(), String> {
     Ok(())
 }
 
-fn espflash_gen_bin(package_folder_path: &std::path::PathBuf, package_name: &str, espflash_relative_ota_folder_path: &std::path::PathBuf, bin_name: &str) -> Result<(u64, u32), String> {
-    let espflash_relative_source_bin_folder_path = Path::new(".")
-        .join("target")
+fn espflash_gen_bin(package_folder_path: &std::path::PathBuf, package_name: &str, espflash_relative_ota_folder_path: &std::path::PathBuf, bin_name: &str, subtarget: &Option<String>) -> Result<(u64, u32), String> {
+    let mut path = Path::new(".").join("target");
+
+    if let Some(sub) = &subtarget {
+        path = path.join(sub);
+    }
+
+    let espflash_relative_source_bin_folder_path = path
         .join("xtensa-esp32s3-none-elf")
         .join("release");
     let espflash_relative_source_bin_file_path =
