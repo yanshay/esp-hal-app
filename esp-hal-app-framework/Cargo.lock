@@ -1954,7 +1954,7 @@ dependencies = [
 
 [[package]]
 name = "esp-hal-app-framework"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3777,6 +3777,7 @@ checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 [[package]]
 name = "mbedtls-rs"
 version = "0.1.0"
+source = "git+https://github.com/esp-rs/mbedtls-rs#177721027aae6e014e1cf922608eb9955d70d85b"
 dependencies = [
  "critical-section",
  "edge-nal",
@@ -3791,6 +3792,7 @@ dependencies = [
 [[package]]
 name = "mbedtls-rs-sys"
 version = "0.1.0"
+source = "git+https://github.com/esp-rs/mbedtls-rs#177721027aae6e014e1cf922608eb9955d70d85b"
 dependencies = [
  "anyhow",
  "bindgen 0.72.1",
