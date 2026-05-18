@@ -97,6 +97,25 @@ where
     },
 }
 
+impl<E> Error<E>
+where
+    E: core::fmt::Debug + 'static,
+{
+    // TODO(storage): Patch the embedded-sdmmc fork as well. Its open_file_in_dir()
+    // currently treats any find_directory_entry() error as "missing" for create
+    // modes. That can still turn non-NotFound FAT/device errors into create or
+    // truncate behavior below this wrapper. Keep this wrapper strict until the
+    // lower layer only creates on embedded_sdmmc::Error::NotFound.
+    fn is_not_found(&self) -> bool {
+        match self {
+            Error::Open { source, .. } | Error::ChangeDir { source, .. } => {
+                matches!(&source.0, embedded_sdmmc::asynchronous::Error::NotFound)
+            }
+            _ => false,
+        }
+    }
+}
+
 pub struct Clock;
 
 impl embedded_sdmmc::asynchronous::TimeSource for Clock {
@@ -238,9 +257,12 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
                     if path_part.is_empty() {
                         continue;
                     };
-                    let res = dir.change_dir(*path_part).await;
-                    if let Err(e) = res {
-                        if CREATE_MODES.contains(&mode) {
+                    match dir.change_dir(*path_part).await {
+                        Ok(()) => {}
+                        Err(e)
+                            if CREATE_MODES.contains(&mode)
+                                && matches!(e, embedded_sdmmc::asynchronous::Error::NotFound) =>
+                        {
                             dir.make_dir_in_dir(*path_part)
                                 .await
                                 .context(MakeDirSnafu {
@@ -251,7 +273,8 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
                                 full_path: path.to_string(),
                                 part: path_part.to_string(),
                             })?;
-                        } else {
+                        }
+                        Err(e) => {
                             return Err(ChangeDirSnafu {
                                 full_path: path.to_string(),
                                 part: path_part.to_string(),
@@ -296,9 +319,12 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
                     if path_part.is_empty() {
                         continue;
                     };
-                    let res = dir.change_dir(*path_part).await;
-                    if let Err(e) = res {
-                        if CREATE_MODES.contains(&mode) {
+                    match dir.change_dir(*path_part).await {
+                        Ok(()) => {}
+                        Err(e)
+                            if CREATE_MODES.contains(&mode)
+                                && matches!(e, embedded_sdmmc::asynchronous::Error::NotFound) =>
+                        {
                             dir.make_dir_in_dir(*path_part)
                                 .await
                                 .context(MakeDirSnafu {
@@ -309,7 +335,8 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
                                 full_path: path.to_string(),
                                 part: path_part.to_string(),
                             })?;
-                        } else {
+                        }
+                        Err(e) => {
                             return Err(ChangeDirSnafu {
                                 full_path: path.to_string(),
                                 part: path_part.to_string(),
@@ -354,10 +381,8 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
                 })?;
                 Ok(true)
             }
-            Err(err) => match err {
-                Error::OpenVolume { source } => Err(Error::OpenVolume { source }),
-                _ => Ok(false),
-            },
+            Err(err) if err.is_not_found() => Ok(false),
+            Err(err) => Err(err),
         }
     }
 
@@ -371,10 +396,8 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
                 })?;
                 Ok(true)
             }
-            Err(err) => match err {
-                Error::OpenVolume { source } => Err(Error::OpenVolume { source }),
-                _ => Ok(false),
-            },
+            Err(err) if err.is_not_found() => Ok(false),
+            Err(err) => Err(err),
         }
     }
 
@@ -516,13 +539,14 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
                 }
                 file
             }
-            Err(_) => {
+            Err(err) if err.is_not_found() => {
                 self.open_file(
                     path,
                     embedded_sdmmc::asynchronous::Mode::ReadWriteCreateOrAppend,
                 )
                 .await?
             }
+            Err(err) => return Err(err),
         };
 
         let file = file.to_file(&self.volume_mgr);
@@ -581,13 +605,14 @@ impl<SPI: SpiDevice, const MAX_DIRS: usize, const MAX_FILES: usize>
         let res = self.read_file_bytes(path).await;
         match res {
             Ok(v) => Ok(v),
-            Err(_) => {
+            Err(err) if err.is_not_found() => {
                 self.inner_read_file_bytes(
                     path,
                     embedded_sdmmc::asynchronous::Mode::ReadWriteCreateOrAppend,
                 )
                 .await
             }
+            Err(err) => Err(err),
         }
     }
 
