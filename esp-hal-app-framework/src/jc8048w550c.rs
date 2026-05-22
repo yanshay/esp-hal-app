@@ -530,6 +530,7 @@ where
 
         let window = McuWindow::new(repaint_buffer_type);
         window.set_size(slint::PhysicalSize::new(DISP_W as u32, DISP_H as u32));
+        self.framework.borrow_mut().set_display_window(window.clone());
         slint::platform::set_platform(Box::new(EspBackend {
             window: window.clone(),
         }))

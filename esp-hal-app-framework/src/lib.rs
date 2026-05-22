@@ -14,6 +14,7 @@ pub mod log_ext;
 pub mod terminal;
 
 pub mod backlight;
+pub mod display_snapshot;
 pub mod flash_map;
 pub mod framework;
 pub mod ui_loop;

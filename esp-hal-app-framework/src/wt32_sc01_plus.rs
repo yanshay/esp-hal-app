@@ -561,6 +561,7 @@ where
         let window =
             McuWindow::new(slint::platform::software_renderer::RepaintBufferType::ReusedBuffer);
         window.set_size(size);
+        self.framework.borrow_mut().set_display_window(window.clone());
         slint::platform::set_platform(Box::new(EspBackend {
             window: window.clone(),
         }))

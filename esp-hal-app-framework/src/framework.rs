@@ -35,7 +35,9 @@ use crate::{
     web_server::WebServerCommand,
 };
 use crate::{
+    display_snapshot::{DisplaySnapshotBmp, DisplaySnapshotError},
     settings::{FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES},
+    slint_ext::{McuWindow, SnapshotError},
     utils::SpawnerHeapExt,
 };
 
@@ -175,6 +177,7 @@ pub struct Framework {
     pub web_config_name_url: String,
     pub web_config_key: String,
     pub ota_state: Option<OtaState>,
+    display_window: Option<Rc<McuWindow>>,
 
     #[cfg(any(feature = "wt32-sc01-plus", feature = "jc8048w550c"))]
     #[allow(clippy::type_complexity)]
@@ -242,6 +245,7 @@ impl Framework {
             web_config_key: String::new(),
             settings,
             ota_state: None,
+            display_window: None,
             #[cfg(any(feature = "wt32-sc01-plus", feature = "jc8048w550c"))]
             inner_file_store: None,
         };
@@ -466,6 +470,31 @@ impl Framework {
         >,
     > {
         self.inner_file_store.clone().unwrap()
+    }
+
+    pub fn set_display_window(&mut self, window: Rc<McuWindow>) {
+        self.display_window = Some(window);
+    }
+
+    pub fn display_snapshot_dimensions(&self) -> Result<(u32, u32), SnapshotError> {
+        self.display_window
+            .as_ref()
+            .ok_or(SnapshotError::NoDisplayWindow)?
+            .snapshot_dimensions()
+    }
+
+    pub fn render_display_snapshot_rgb565(
+        &self,
+        output: &mut [slint::platform::software_renderer::Rgb565Pixel],
+    ) -> Result<(u32, u32), SnapshotError> {
+        self.display_window
+            .as_ref()
+            .ok_or(SnapshotError::NoDisplayWindow)?
+            .render_snapshot_rgb565(output)
+    }
+
+    pub fn take_display_snapshot_bmp(&self) -> Result<DisplaySnapshotBmp, DisplaySnapshotError> {
+        DisplaySnapshotBmp::take(self)
     }
 
     pub fn report_wifi(&mut self, ip: Option<Ipv4Addr>, captive: bool, ssid: &str) {

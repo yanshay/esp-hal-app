@@ -11,6 +11,15 @@
 use alloc::rc::Rc;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 
+use slint::platform::software_renderer::{LineBufferProvider, RepaintBufferType, Rgb565Pixel};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotError {
+    NoDisplayWindow,
+    InvalidWindowSize,
+    BufferTooSmall { required: usize, actual: usize },
+}
+
 pub struct McuWindow {
     window: slint::Window,
     renderer: slint::platform::software_renderer::SoftwareRenderer,
@@ -73,6 +82,64 @@ impl McuWindow {
 
     pub async fn wait_needs_redraw(&self) {
         self.redraw_signal.wait().await;
+    }
+
+    pub fn snapshot_dimensions(&self) -> Result<(u32, u32), SnapshotError> {
+        let size = self.size.get();
+        if size.width == 0 || size.height == 0 {
+            return Err(SnapshotError::InvalidWindowSize);
+        }
+
+        Ok((size.width, size.height))
+    }
+
+    pub fn render_snapshot_rgb565(
+        &self,
+        output: &mut [Rgb565Pixel],
+    ) -> Result<(u32, u32), SnapshotError> {
+        struct SnapshotLineBuffer<'a> {
+            output: &'a mut [Rgb565Pixel],
+            stride: usize,
+        }
+
+        impl LineBufferProvider for SnapshotLineBuffer<'_> {
+            type TargetPixel = Rgb565Pixel;
+
+            fn process_line(
+                &mut self,
+                line: usize,
+                range: core::ops::Range<usize>,
+                render_fn: impl FnOnce(&mut [Self::TargetPixel]),
+            ) {
+                let line_begin = line * self.stride;
+                render_fn(&mut self.output[line_begin..][range]);
+            }
+        }
+
+        let (width, height) = self.snapshot_dimensions()?;
+        let width = width as usize;
+        let height = height as usize;
+        let required = width
+            .checked_mul(height)
+            .ok_or(SnapshotError::InvalidWindowSize)?;
+
+        if output.len() < required {
+            return Err(SnapshotError::BufferTooSmall {
+                required,
+                actual: output.len(),
+            });
+        }
+
+        let repaint_buffer_type = self.renderer.repaint_buffer_type();
+        self.renderer
+            .set_repaint_buffer_type(RepaintBufferType::NewBuffer);
+        self.renderer.render_by_line(SnapshotLineBuffer {
+            output: &mut output[..required],
+            stride: width,
+        });
+        self.renderer.set_repaint_buffer_type(repaint_buffer_type);
+
+        Ok((width as u32, height as u32))
     }
 }
 
