@@ -101,11 +101,6 @@ impl<E> Error<E>
 where
     E: core::fmt::Debug + 'static,
 {
-    // TODO(storage): Patch the embedded-sdmmc fork as well. Its open_file_in_dir()
-    // currently treats any find_directory_entry() error as "missing" for create
-    // modes. That can still turn non-NotFound FAT/device errors into create or
-    // truncate behavior below this wrapper. Keep this wrapper strict until the
-    // lower layer only creates on embedded_sdmmc::Error::NotFound.
     fn is_not_found(&self) -> bool {
         match self {
             Error::Open { source, .. } | Error::ChangeDir { source, .. } => {
