@@ -2,7 +2,7 @@ use core::{cell::RefCell, future::ready, marker::PhantomData};
 
 use aes::cipher::{KeyIvInit, StreamCipher};
 use aes_gcm::{
-    aead::{Aead, KeyInit, Payload},
+    aead::{Aead, AeadInPlace, KeyInit, Payload},
     Aes256Gcm, Key, Nonce,
 };
 use alloc::{
@@ -12,7 +12,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+use base64::{engine::general_purpose::STANDARD_NO_PAD, encoded_len, Engine as _};
 use embassy_time::Timer;
 use framework_macros::include_bytes_gz;
 use hmac::{Hmac, Mac};
@@ -696,6 +696,59 @@ pub fn encrypt_bytes(key_bytes: &[u8], data: &[u8]) -> String {
     );
 
     res
+}
+
+pub fn encrypt_bytes_compact<E, F>(key_bytes: &[u8], plaintext_len: usize, write_plaintext: F) -> Result<String, E>
+where
+    F: FnOnce(&mut [u8]) -> Result<(), E>,
+{
+    const IV_LEN: usize = 12;
+    const TAG_LEN: usize = 16;
+    const IV_B64_LEN: usize = 16;
+    const OVERLAP_SLACK: usize = 64;
+
+    assert!(!key_bytes.is_empty());
+
+    let ciphertext_len = plaintext_len.checked_add(TAG_LEN).expect("usize overflow when calculating ciphertext size");
+    let ciphertext_b64_len = encoded_len(ciphertext_len, false).expect("usize overflow when calculating base64 size");
+    let final_len = IV_B64_LEN.checked_add(ciphertext_b64_len).expect("usize overflow when calculating encrypted size");
+    let working_len = final_len.checked_add(OVERLAP_SLACK).expect("usize overflow when calculating encrypted buffer size");
+    let mut buffer = vec![0_u8; working_len];
+
+    let mut iv_bytes = [0u8; IV_LEN];
+    getrandom::getrandom(&mut iv_bytes).expect("Random should not fail");
+    let iv = Nonce::from_slice(&iv_bytes);
+    let iv_len = STANDARD_NO_PAD
+        .encode_slice(iv_bytes, &mut buffer[..IV_B64_LEN])
+        .expect("IV base64 buffer should be large enough");
+    debug_assert_eq!(iv_len, IV_B64_LEN);
+
+    let ciphertext_start = working_len - ciphertext_len;
+    let tag_start = ciphertext_start + plaintext_len;
+    write_plaintext(&mut buffer[ciphertext_start..tag_start])?;
+
+    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
+    let cipher = Aes256Gcm::new(key);
+    let tag = cipher
+        .encrypt_in_place_detached(iv, b"", &mut buffer[ciphertext_start..tag_start])
+        .expect("Encryption here should not fail");
+    buffer[tag_start..tag_start + TAG_LEN].copy_from_slice(tag.as_slice());
+
+    // SAFETY: this intentionally overlaps source and destination to avoid a second full-size
+    // response allocation. The ciphertext is placed after the output start, and the slack keeps the
+    // current base64 encoder's forward writes behind bytes it has not read yet.
+    let bytes_written = unsafe {
+        let ptr = buffer.as_mut_ptr();
+        let ciphertext = core::slice::from_raw_parts(ptr.add(ciphertext_start), ciphertext_len);
+        let ciphertext_b64 = core::slice::from_raw_parts_mut(ptr.add(IV_B64_LEN), ciphertext_b64_len);
+        STANDARD_NO_PAD
+            .encode_slice(ciphertext, ciphertext_b64)
+            .expect("ciphertext base64 buffer should be large enough")
+    };
+    debug_assert_eq!(bytes_written, ciphertext_b64_len);
+
+    buffer.truncate(final_len);
+    Ok(unsafe { String::from_utf8_unchecked(buffer) })
 }
 
 pub fn encrypt(key_bytes: &[u8], data: &str) -> String {
