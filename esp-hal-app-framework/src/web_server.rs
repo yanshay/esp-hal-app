@@ -9,6 +9,7 @@ use alloc::{
 use embassy_futures::select::select;
 use embassy_net::Stack;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, pubsub::WaitResult};
+use embassy_time::Duration;
 use embedded_io_async::Write;
 use esp_mbedtls::TlsReference;
 use picoserve::{routing, AppRouter, AppWithStateBuilder, Config, LogDisplay, Router};
@@ -364,9 +365,15 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
             continue;
         }
 
+        socket.set_keep_alive(Some(Duration::from_secs(30)));
+        socket.set_timeout(Some(Duration::from_secs(45)));
+
         let remote_endpoint = socket.remote_endpoint();
 
-        debug!("[{task_id}] Connected from {remote_endpoint:?}");
+        info!(
+            "[{task_id}] {} Web Application: Accepted connection from {remote_endpoint:?}",
+            web_server_config.web_app_name
+        );
         if web_server_config.tls {
             debug!("[{task_id}] Serving HTTPS request");
             let tls_config = ServerSessionConfig::new(tls_credentials.unwrap().clone());
@@ -380,7 +387,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
                 .await
             {
                 Ok(disconnection_info) => {
-                    debug!(
+                    info!(
                         "[{task_id}] {} requests handled from {:?}",
                         disconnection_info.handled_requests_count, remote_endpoint
                     );
@@ -395,7 +402,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
                 .await
             {
                 Ok(disconnection_info) => {
-                    debug!(
+                    info!(
                         "[{task_id}] {} requests handled from {:?}",
                         disconnection_info.handled_requests_count, remote_endpoint
                     );
@@ -420,11 +427,17 @@ pub struct SessionWrapper<'a> {
 }
 
 #[derive(Debug)]
-pub struct TlsSocketError(pub SessionError);
+pub enum TlsSocketError {
+    Session(SessionError),
+    Tcp(embassy_net::tcp::Error),
+}
 
 impl core::fmt::Display for TlsSocketError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.0.fmt(f)
+        match self {
+            Self::Session(error) => error.fmt(f),
+            Self::Tcp(error) => write!(f, "TCP error: {:?}", error),
+        }
     }
 }
 
@@ -442,9 +455,29 @@ impl<'s> SessionWrapper<'s> {
             session: Rc::new(Mutex::new(session)),
         }
     }
-    pub async fn close(&mut self) -> Result<(), TlsSocketError> {
+    // Must be called under a timeout: TLS close-notify and TCP flush can wait on the peer.
+    async fn graceful_close(&mut self) -> Result<(), TlsSocketError> {
         let mut session = self.session.lock().await;
-        session.close().await.map_err(TlsSocketError)
+        session.close().await.map_err(TlsSocketError::Session)?;
+        session.stream().close();
+        session.stream().flush().await.map_err(TlsSocketError::Tcp)
+    }
+
+    async fn abort_tcp<Timer: picoserve::Timer<picoserve::EmbassyRuntime>>(
+        &mut self,
+        timeouts: &picoserve::Timeouts,
+        timer: &mut Timer,
+    ) -> Result<(), picoserve::Error<TlsSocketError>> {
+        info!("TLS TCP abort started");
+        let mut session = self.session.lock().await;
+        session.stream().abort();
+        timer
+            .run_with_timeout(timeouts.write, session.stream().flush())
+            .await
+            .map_err(picoserve::Error::WriteTimeout)?
+            .map_err(|error| picoserve::Error::Write(TlsSocketError::Tcp(error)))?;
+        info!("TLS TCP abort completed");
+        Ok(())
     }
 }
 
@@ -461,7 +494,7 @@ impl embedded_io_async::ErrorType for SessionReader<'_> {
 impl embedded_io_async::Read for SessionReader<'_> {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         let mut session = self.session.lock().await;
-        session.read(buf).await.map_err(TlsSocketError)
+        session.read(buf).await.map_err(TlsSocketError::Session)
     }
 }
 
@@ -476,12 +509,12 @@ impl embedded_io_async::ErrorType for SessionWriter<'_> {
 impl embedded_io_async::Write for SessionWriter<'_> {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         let mut session = self.session.lock().await;
-        session.write(buf).await.map_err(TlsSocketError)
+        session.write(buf).await.map_err(TlsSocketError::Session)
     }
 
     async fn flush(&mut self) -> Result<(), Self::Error> {
         let mut session = self.session.lock().await;
-        session.flush().await.map_err(TlsSocketError)
+        session.flush().await.map_err(TlsSocketError::Session)
     }
 }
 
@@ -510,17 +543,32 @@ impl<'s> picoserve::io::Socket<picoserve::EmbassyRuntime> for SessionWrapper<'s>
 
     async fn abort<Timer: picoserve::Timer<picoserve::EmbassyRuntime>>(
         mut self,
-        _timeouts: &picoserve::Timeouts,
-        _timer: &mut Timer,
+        timeouts: &picoserve::Timeouts,
+        timer: &mut Timer,
     ) -> Result<(), picoserve::Error<Self::Error>> {
-        self.close().await.map_err(picoserve::Error::Write)
+        self.abort_tcp(timeouts, timer).await
     }
 
     async fn shutdown<Timer: picoserve::Timer<picoserve::EmbassyRuntime>>(
         mut self,
-        _timeouts: &picoserve::Timeouts,
-        _timer: &mut Timer,
+        timeouts: &picoserve::Timeouts,
+        timer: &mut Timer,
     ) -> Result<(), picoserve::Error<Self::Error>> {
-        self.close().await.map_err(picoserve::Error::Write)
+        info!("TLS shutdown started");
+        match timer.run_with_timeout(timeouts.write, self.graceful_close()).await {
+            Ok(Ok(())) => {
+                info!("TLS shutdown completed gracefully");
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                warn!("TLS shutdown failed, aborting TCP: {:?}", error);
+                self.abort_tcp(timeouts, timer).await
+            }
+            Err(error) => {
+                warn!("TLS shutdown timed out, aborting TCP");
+                self.abort_tcp(timeouts, timer).await?;
+                Err(picoserve::Error::WriteTimeout(error))
+            }
+        }
     }
 }
