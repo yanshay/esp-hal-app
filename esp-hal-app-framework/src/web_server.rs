@@ -5,6 +5,7 @@ use alloc::{
     format,
     rc::Rc,
     string::{String, ToString},
+    vec,
 };
 use embassy_futures::select::select;
 use embassy_net::Stack;
@@ -47,6 +48,7 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
         app_router: &'static AppRouter<WebAppBuilder<MoreState, NestedMainAppBuilder>>,
         app_state: &'static WebAppState<MoreState>,
         config: Config,
+        buffer_sizes: WebServerBufferSizes,
     ) -> Self {
         let web_server_config = WebServerConfig {
             web_app_name: "Web-Config",
@@ -54,6 +56,7 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
             tls: framework.borrow().settings.web_server_https,
             tls_certificate: framework.borrow().settings.web_server_tls_certificate,
             tls_private_key: framework.borrow().settings.web_server_tls_private_key,
+            buffer_sizes,
         };
         let generic_runner = GenericRunner::<
             WebAppBuilder<MoreState, NestedMainAppBuilder>,
@@ -198,6 +201,24 @@ pub struct WebServerConfig {
     pub tls: bool,
     pub tls_certificate: &'static str,
     pub tls_private_key: &'static str,
+    pub buffer_sizes: WebServerBufferSizes,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WebServerBufferSizes {
+    pub tcp_rx: usize,
+    pub tcp_tx: usize,
+    pub http: usize,
+}
+
+impl Default for WebServerBufferSizes {
+    fn default() -> Self {
+        Self {
+            tcp_rx: 2048,
+            tcp_tx: 2048,
+            http: 16 * 1024,
+        }
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -347,9 +368,10 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
     state: &GenericAppState,
 ) -> ! {
     let port = web_server_config.port;
-    let mut tcp_rx_buffer = Box::new([0u8; 2048]);
-    let mut tcp_tx_buffer = Box::new([0u8; 2048]);
-    let mut http_buffer = Box::new([0u8; 1024 * 16]);
+    let buffer_sizes = web_server_config.buffer_sizes;
+    let mut tcp_rx_buffer = vec![0u8; buffer_sizes.tcp_rx].into_boxed_slice();
+    let mut tcp_tx_buffer = vec![0u8; buffer_sizes.tcp_tx].into_boxed_slice();
+    let mut http_buffer = vec![0u8; buffer_sizes.http].into_boxed_slice();
 
     loop {
         let mut socket =
