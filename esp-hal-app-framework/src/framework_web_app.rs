@@ -1,4 +1,4 @@
-use core::{cell::RefCell, future::ready, marker::PhantomData};
+use core::{cell::RefCell, marker::PhantomData};
 
 use aes::cipher::{KeyIvInit, StreamCipher};
 use aes_gcm::{
@@ -13,16 +13,15 @@ use alloc::{
     vec::Vec,
 };
 use base64::{encoded_len, engine::general_purpose::STANDARD_NO_PAD, Engine as _};
-use embassy_time::Timer;
 use framework_macros::include_bytes_gz;
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
 use picoserve::{
-    extract::{FromRequest, State},
+    extract::FromRequest,
     io::Read,
-    request::{RequestBody, RequestParts},
-    response::{IntoResponse, Redirect, StatusCode},
-    routing::{get, get_service, post, PathRouter},
+    request::{Path, Request, RequestBody, RequestParts},
+    response::{IntoResponse, Redirect, ResponseWriter, StatusCode},
+    routing::{PathRouter, PathRouterService, RequestHandlerService},
     AppWithStateBuilder, ResponseSent,
 };
 use serde::{Deserialize, Serialize};
@@ -182,436 +181,748 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
     type PathRouter = impl PathRouter<WebAppState<MoreState>>;
 
     fn build_app(self) -> picoserve::Router<Self::PathRouter, Self::State> {
-        let router = picoserve::Router::new();
-        let router = router.nest(
-            self.app_builder.path_description(),
-            self.app_builder.build_app(),
-        );
-
-        // Captive portal parts ///////////////////////////////////////////////////////////////////////////////////////
-
-        let router = router
-            .route(
-                "/crypto-js-4.2.0.min.js",
-                get_service(picoserve::response::File::with_content_type_and_headers(
-                    "application/javascript; charset=utf-8",
-                    include_bytes_gz!("src/static/crypto-js-4.2.0.min.js"),
-                    &[("Content-Encoding", "gzip")],
-                )),
-            )
-            .route(
-                "/captive",
-                get_service(picoserve::response::File::with_content_type_and_headers(
-                    "text/html",
-                    self.captive_html_gz,
-                    &[("Content-Encoding", "gzip")],
-                )),
-            );
-
-        let router = router.route(
-            "/captive/api/test-key",
-            post(
-                async move |State(Encryption(key)): State<Encryption>,
-                            LimitedBodyString(body): LimitedBodyString| {
-                    // Order matter, state first, post data last
-                    Timer::after_secs(1).await;
-                    if let Ok(_decrypted) = ctr_decrypt(&key.borrow(), body.as_bytes()) {
-                        (StatusCode::OK, "")
-                    } else {
-                        (StatusCode::FORBIDDEN, "")
-                    }
-                },
-            ),
-        );
-
-        let router = router.route(
-            "/captive/api/fixed-key-config",
-            post(
-                async move |State(Encryption(key)): State<Encryption>,
-                            State(FrameworkState(framework)): State<FrameworkState>,
-                            LimitedBodyString(body): LimitedBodyString| {
-                    match ctr_decrypt(&key.borrow(), body.as_bytes()) {
-                        Ok(decrypted) => (StatusCode::OK, {
-                            match serde_json::from_str::<FixedKeyConfigDTO>(&decrypted) {
-                                Ok(fixed_key_config) => {
-                                    match framework
-                                        .borrow_mut()
-                                        .set_fixed_key(&fixed_key_config.key)
-                                    {
-                                        Ok(_) => SetConfigResponseDTO { error_text: None }
-                                            .ctr_encrypt(&key.borrow()),
-                                        Err(e) => SetConfigResponseDTO {
-                                            error_text: Some(format!("{e:?}")),
-                                        }
-                                        .ctr_encrypt(&key.borrow()),
-                                    }
-                                }
-                                Err(e) => SetConfigResponseDTO {
-                                    error_text: Some(format!("{e:?}")),
-                                }
-                                .ctr_encrypt(&key.borrow()),
-                            }
-                        }),
-                        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
-                    }
-                },
-            ),
-        );
-
-        let router = router.route(
-            "/captive/api/wifi-config",
-            post(
-                move |State(Encryption(key)): State<Encryption>,
-                    State(FrameworkState(framework)): State<FrameworkState>,
-                    LimitedBodyString(body): LimitedBodyString| {
-                    ready(match ctr_decrypt(&key.borrow(), body.as_bytes()) {
-                        Ok(decrypted) => (StatusCode::OK, {
-                            match serde_json::from_str::<WifiConfigDTO>(&decrypted) {
-                                Ok(wifi_config) => {
-                                    match framework.borrow_mut().set_wifi_credentials(
-                                        &wifi_config.ssid,
-                                        &wifi_config.password,
-                                    ) {
-                                        Ok(_) => SetConfigResponseDTO { error_text: None }
-                                            .ctr_encrypt(&key.borrow()),
-                                        Err(e) => SetConfigResponseDTO {
-                                            error_text: Some(format!("{e:?}")),
-                                        }
-                                        .ctr_encrypt(&key.borrow()),
-                                    }
-                                }
-                                Err(e) => SetConfigResponseDTO {
-                                    error_text: Some(format!("{e:?}")),
-                                }
-                                .ctr_encrypt(&key.borrow()),
-                            }
-                        }),
-                        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
-                    })
-                },
-            )
-            .get(async move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>| {
-                    WifiConfigDTO {
-                        ssid: framework
-                            .borrow()
-                            .wifi_ssid
-                            .as_ref()
-                            .unwrap_or(&String::from(""))
-                            .clone(),
-                        password: framework
-                            .borrow()
-                            .wifi_password
-                            .as_ref()
-                            .unwrap_or(&String::from(""))
-                            .clone(),
-                    }
-                    .ctr_encrypt(&key.borrow())
-            }),
-        );
-
-        let router = router.route(
-            "/captive/api/device-name-config",
-            post(
-                async move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>, LimitedBodyString(body): LimitedBodyString| {
-                    match ctr_decrypt(&key.borrow(), body.as_bytes()) {
-                        Ok(decrypted) => (StatusCode::OK, {
-                            match serde_json::from_str::<DeviceNameDTO>(&decrypted) {
-                                Ok(device_name_config) => {
-                                    match framework
-                                        .borrow_mut()
-                                        .set_device_name(&device_name_config.name)
-                                    {
-                                        Ok(_) => SetConfigResponseDTO { error_text: None }
-                                            .ctr_encrypt(&key.borrow()),
-                                        Err(e) => SetConfigResponseDTO {
-                                            error_text: Some(format!("{e:?}")),
-                                        }
-                                        .ctr_encrypt(&key.borrow()),
-                                    }
-                                }
-                                Err(e) => SetConfigResponseDTO {
-                                    error_text: Some(format!("{e:?}")),
-                                }
-                                .ctr_encrypt(&key.borrow()),
-                            }
-                        }),
-                        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
-                    }
-                },
-            )
-            .get(async move |State(Encryption(key)): State<Encryption>, State(FrameworkState(framework)): State<FrameworkState>| {
-                    DeviceNameDTO {
-                        name: framework
-                            .borrow()
-                            .device_name
-                            .as_ref()
-                            .unwrap_or(&String::from(""))
-                            .clone(),
-                    }
-                    .ctr_encrypt(&key.borrow())
-            }),
-        );
-
-        let router = router.route(
-            "/captive/api/reset-device",
-            post(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>,
-                      LimitedBodyString(body): LimitedBodyString| {
-                    ready(match ctr_decrypt(&key.borrow(), body.as_bytes()) {
-                        Ok(_) => {
-                            framework.borrow_mut().reset_device_safer(None);
-                            (
-                                StatusCode::OK,
-                                SetConfigResponseDTO { error_text: None }
-                                    .ctr_encrypt(&key.borrow()),
-                            )
-                        }
-                        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
-                    })
-                },
-            ),
-        );
-
-        // Standard config parts //////////////////////////////////////////////////////////////////////////////////////
-        let router = router.route(
-            "/config",
-            get_service(picoserve::response::File::with_content_type_and_headers(
-                "text/html",
-                self.web_app_html_gz,
-                &[("Content-Encoding", "gzip")],
-            )),
-        ); // main config page
-
-        let router = router
-            .route(
-                // wasm (for encrypt/decrypt)
-                "/pkg/device_wasm_bg.wasm",
-                get_service(picoserve::response::File::with_content_type_and_headers(
-                    "application/wasm",
-                    include_bytes_gz!("src/static/device_wasm_bg.wasm"),
-                    &[("Content-Encoding", "gzip")],
-                )),
-            )
-            .route(
-                "/pkg/device_wasm.js",
-                get_service(picoserve::response::File::with_content_type_and_headers(
-                    "application/javascript; charset=utf-8",
-                    include_bytes_gz!("src/static/device_wasm.js"),
-                    &[("Content-Encoding", "gzip")],
-                )),
-            );
-
-        let router = router.route(
-            "/api/wifi-config",
-            post(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>,
-                      WifiConfigDTO { ssid, password }| {
-                    // NOTE: ready is used here, I'm not fully clear why it's required but it is.
-                    // It has to do with the method not being async and th need to borrow together.
-                    // If I do async then I get issue with borrowing moved data.
-                    // If I don't do async no the result (which is not future) then I have issue with borrow.
-                    // Could be that if key will not be borrowed, or if like with picoserve Json there will be
-                    //   an impl of future to the result (then need something other than String),
-                    // it will be solved.
-                    // So if need async here, need to search for proper solution
-                    ready(
-                        match framework
-                            .borrow_mut()
-                            .set_wifi_credentials(&ssid, &password)
-                        {
-                            Ok(_) => {
-                                SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
-                            }
-                            Err(e) => SetConfigResponseDTO {
-                                error_text: Some(format!("{e:?}")),
-                            }
-                            .encrypt(&key.borrow()),
-                        },
-                    )
-                },
-            )
-            .get(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>| {
-                    ready(
-                        WifiConfigDTO {
-                            ssid: framework
-                                .borrow()
-                                .wifi_ssid
-                                .as_ref()
-                                .unwrap_or(&String::from(""))
-                                .clone(),
-                            password: framework
-                                .borrow()
-                                .wifi_password
-                                .as_ref()
-                                .unwrap_or(&String::from(""))
-                                .clone(),
-                        }
-                        .encrypt(&key.borrow()),
-                    )
-                },
-            ),
-        );
-
-        let router = router.route(
-            "/api/device-name-config",
-            post(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>,
-                      DeviceNameDTO { name }| {
-                    ready(match framework.borrow_mut().set_device_name(&name) {
-                        Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
-                        Err(e) => SetConfigResponseDTO {
-                            error_text: Some(format!("{e:?}")),
-                        }
-                        .encrypt(&key.borrow()),
-                    })
-                },
-            )
-            .get(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>| {
-                    ready(
-                        DeviceNameDTO {
-                            name: framework
-                                .borrow()
-                                .device_name
-                                .as_ref()
-                                .unwrap_or(&String::from(""))
-                                .clone(),
-                        }
-                        .encrypt(&key.borrow()),
-                    )
-                },
-            ),
-        );
-
-        let router = router.route(
-            "/api/reset-device",
-            post(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>,
-                      ResetDeviceDTO {}| {
-                    framework.borrow_mut().reset_device_safer(None);
-                    ready(SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()))
-                },
-            ),
-        );
-
-        let router = router.route(
-            "/api/display-config",
-            post(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>,
-                      DisplayConfigDTO {
-                          dimming_timeout,
-                          dimming_percent,
-                          blackout_timeout,
-                      }| {
-                    ready(
-                        match framework.borrow_mut().set_display_settings(
-                            dimming_timeout,
-                            dimming_percent,
-                            blackout_timeout,
-                        ) {
-                            Ok(_) => {
-                                SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
-                            }
-                            Err(e) => SetConfigResponseDTO {
-                                error_text: Some(format!("{e:?}")),
-                            }
-                            .encrypt(&key.borrow()),
-                        },
-                    )
-                },
-            )
-            .get(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>| {
-                    let framework = framework.borrow();
-                    ready(
-                        DisplayConfigDTO {
-                            dimming_timeout: framework.display_dimming_timeout,
-                            dimming_percent: framework.display_dimming_percent,
-                            blackout_timeout: framework.display_blackout_timeout,
-                        }
-                        .encrypt(&key.borrow()),
-                    )
-                },
-            ),
-        );
-
-        let router = router.route(
-            "/api/test-key",
-            post(
-                async move |State(Encryption(key)): State<Encryption>,
-                            TestKeyDTO { test: _test }| {
-                    // Order matter, state first, post data last
-                    TestKeyResponseDTO { error_text: None }.encrypt(&key.borrow())
-                },
-            ),
-        );
-
-        let router = router.route(
-            "/api/fixed-key-config",
-            post(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>,
-                      FixedKeyConfigDTO { key: fixed_key }| {
-                    ready(match framework.borrow_mut().set_fixed_key(&fixed_key) {
-                        Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
-                        Err(e) => SetConfigResponseDTO {
-                            error_text: Some(format!("{e:?}")),
-                        }
-                        .encrypt(&key.borrow()),
-                    })
-                },
-            ),
-        );
-
-        let router = router.route(
-            "/api/ota-request",
-            post(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>,
-                      OtaRequestDTO { request }| {
-                    ready({
-                        framework.borrow().submit_ota_request(request);
-                        SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
-                    })
-                },
-            ),
-        );
-
-        let router = router.route(
-            "/api/ota-config",
-            get(
-                move |State(Encryption(key)): State<Encryption>,
-                      State(FrameworkState(framework)): State<FrameworkState>| {
-                    let framework = framework.borrow();
-                    ready(
-                        OtaStatusDTO {
-                            status: framework
-                                .ota_state
-                                .as_ref()
-                                .map_or(String::new(), |s| s.to_string()),
-                            curr_ver: framework.settings.app_cargo_pkg_version.to_string(),
-                        }
-                        .encrypt(&key.borrow()),
-                    )
-                },
-            ),
-        );
-
-        router
+        let nested_app = self.app_builder.build_app();
+        picoserve::Router::from_service(FrameworkWebService {
+            nested_app,
+            captive_html_gz: self.captive_html_gz,
+            web_app_html_gz: self.web_app_html_gz,
+        })
     }
 }
 
 pub struct CustomNotFound {
     pub web_server_captive: bool,
+}
+
+macro_rules! box_route_future {
+    ($body:expr) => {
+        alloc::boxed::Box::pin(async move { $body }).await
+    };
+}
+
+struct FrameworkWebService<MoreState, NestedPathRouter>
+where
+    NestedPathRouter: PathRouter<WebAppState<MoreState>>,
+{
+    nested_app: picoserve::Router<NestedPathRouter, WebAppState<MoreState>>,
+    captive_html_gz: &'static [u8],
+    web_app_html_gz: &'static [u8],
+}
+
+impl<MoreState, NestedPathRouter> PathRouterService<WebAppState<MoreState>>
+    for FrameworkWebService<MoreState, NestedPathRouter>
+where
+    NestedPathRouter: PathRouter<WebAppState<MoreState>>,
+{
+    async fn call_path_router_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+        &self,
+        state: &WebAppState<MoreState>,
+        (): (),
+        path: Path<'_>,
+        request: Request<'_, R>,
+        response_writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        let method = ApiMethod::from(request.parts.method());
+        match (method, path.encoded()) {
+            (ApiMethod::Get, "/crypto-js-4.2.0.min.js") => box_route_future!({
+                picoserve::response::File::with_content_type_and_headers(
+                    "application/javascript; charset=utf-8",
+                    include_bytes_gz!("src/static/crypto-js-4.2.0.min.js"),
+                    &[("Content-Encoding", "gzip")],
+                )
+                .call_request_handler_service(state, (), request, response_writer)
+                .await
+            }),
+            (ApiMethod::Get, "/captive") => box_route_future!({
+                picoserve::response::File::with_content_type_and_headers(
+                    "text/html",
+                    self.captive_html_gz,
+                    &[("Content-Encoding", "gzip")],
+                )
+                .call_request_handler_service(state, (), request, response_writer)
+                .await
+            }),
+            (ApiMethod::Post, "/captive/api/test-key") => {
+                box_route_future!(handle_captive_test_key(state, request, response_writer).await)
+            }
+            (ApiMethod::Post, "/captive/api/fixed-key-config") => {
+                box_route_future!(
+                    handle_captive_fixed_key_config(state, request, response_writer).await
+                )
+            }
+            (ApiMethod::Post, "/captive/api/wifi-config") => {
+                box_route_future!(
+                    handle_captive_wifi_config_post(state, request, response_writer).await
+                )
+            }
+            (ApiMethod::Get, "/captive/api/wifi-config") => {
+                box_route_future!(
+                    handle_captive_wifi_config_get(state, request, response_writer).await
+                )
+            }
+            (ApiMethod::Post, "/captive/api/device-name-config") => {
+                box_route_future!(
+                    handle_captive_device_name_config_post(state, request, response_writer).await
+                )
+            }
+            (ApiMethod::Get, "/captive/api/device-name-config") => {
+                box_route_future!(
+                    handle_captive_device_name_config_get(state, request, response_writer).await
+                )
+            }
+            (ApiMethod::Post, "/captive/api/reset-device") => {
+                box_route_future!(
+                    handle_captive_reset_device(state, request, response_writer).await
+                )
+            }
+            (ApiMethod::Get, "/config") => box_route_future!({
+                picoserve::response::File::with_content_type_and_headers(
+                    "text/html",
+                    self.web_app_html_gz,
+                    &[("Content-Encoding", "gzip")],
+                )
+                .call_request_handler_service(state, (), request, response_writer)
+                .await
+            }),
+            (ApiMethod::Get, "/pkg/device_wasm_bg.wasm") => box_route_future!({
+                picoserve::response::File::with_content_type_and_headers(
+                    "application/wasm",
+                    include_bytes_gz!("src/static/device_wasm_bg.wasm"),
+                    &[("Content-Encoding", "gzip")],
+                )
+                .call_request_handler_service(state, (), request, response_writer)
+                .await
+            }),
+            (ApiMethod::Get, "/pkg/device_wasm.js") => box_route_future!({
+                picoserve::response::File::with_content_type_and_headers(
+                    "application/javascript; charset=utf-8",
+                    include_bytes_gz!("src/static/device_wasm.js"),
+                    &[("Content-Encoding", "gzip")],
+                )
+                .call_request_handler_service(state, (), request, response_writer)
+                .await
+            }),
+            (ApiMethod::Post, "/api/wifi-config") => {
+                box_route_future!(
+                    handle_framework_post(
+                        state,
+                        request,
+                        response_writer,
+                        handle_framework_wifi_config_post,
+                    )
+                    .await
+                )
+            }
+            (ApiMethod::Get, "/api/wifi-config") => {
+                box_route_future!(
+                    handle_framework_get(
+                        request,
+                        response_writer,
+                        state,
+                        handle_framework_wifi_config_get,
+                    )
+                    .await
+                )
+            }
+            (ApiMethod::Post, "/api/device-name-config") => {
+                box_route_future!(
+                    handle_framework_post(
+                        state,
+                        request,
+                        response_writer,
+                        handle_framework_device_name_config_post,
+                    )
+                    .await
+                )
+            }
+            (ApiMethod::Get, "/api/device-name-config") => {
+                box_route_future!(
+                    handle_framework_get(
+                        request,
+                        response_writer,
+                        state,
+                        handle_framework_device_name_config_get,
+                    )
+                    .await
+                )
+            }
+            (ApiMethod::Post, "/api/reset-device") => {
+                box_route_future!(
+                    handle_framework_post(
+                        state,
+                        request,
+                        response_writer,
+                        handle_framework_reset_device,
+                    )
+                    .await
+                )
+            }
+            (ApiMethod::Post, "/api/display-config") => {
+                box_route_future!(
+                    handle_framework_post(
+                        state,
+                        request,
+                        response_writer,
+                        handle_framework_display_config_post,
+                    )
+                    .await
+                )
+            }
+            (ApiMethod::Get, "/api/display-config") => {
+                box_route_future!(
+                    handle_framework_get(
+                        request,
+                        response_writer,
+                        state,
+                        handle_framework_display_config_get,
+                    )
+                    .await
+                )
+            }
+            (ApiMethod::Post, "/api/test-key") => {
+                box_route_future!(
+                    handle_framework_post(
+                        state,
+                        request,
+                        response_writer,
+                        handle_framework_test_key
+                    )
+                    .await
+                )
+            }
+            (ApiMethod::Post, "/api/fixed-key-config") => {
+                box_route_future!(
+                    handle_framework_post(
+                        state,
+                        request,
+                        response_writer,
+                        handle_framework_fixed_key_config,
+                    )
+                    .await
+                )
+            }
+            (ApiMethod::Post, "/api/ota-request") => {
+                box_route_future!(
+                    handle_framework_post(
+                        state,
+                        request,
+                        response_writer,
+                        handle_framework_ota_request,
+                    )
+                    .await
+                )
+            }
+            (ApiMethod::Get, "/api/ota-config") => {
+                box_route_future!(
+                    handle_framework_get(
+                        request,
+                        response_writer,
+                        state,
+                        handle_framework_ota_config_get,
+                    )
+                    .await
+                )
+            }
+            _ => box_route_future!({
+                let nested_app = self.nested_app.shared().with_state(state);
+                nested_app.handle_request(request, response_writer).await
+            }),
+        }
+    }
+}
+
+async fn extract_framework_request<T, MoreState, R: Read>(
+    state: &WebAppState<MoreState>,
+    request_parts: RequestParts<'_>,
+    request_body: RequestBody<'_, R>,
+) -> Result<T, EncryptedRejection>
+where
+    T: for<'r> FromRequest<'r, WebAppState<MoreState>, Rejection = EncryptedRejection>,
+{
+    T::from_request(state, request_parts, request_body).await
+}
+
+async fn write_framework_rejection<
+    R: Read,
+    W: ResponseWriter<Error = R::Error>,
+    Rejection: IntoResponse,
+>(
+    request: Request<'_, R>,
+    response_writer: W,
+    rejection: Rejection,
+) -> Result<ResponseSent, W::Error> {
+    rejection
+        .write_to(request.body_connection.finalize().await?, response_writer)
+        .await
+}
+
+async fn handle_framework_get<MoreState, R, W, Handler>(
+    request: Request<'_, R>,
+    response_writer: W,
+    state: &WebAppState<MoreState>,
+    handler: Handler,
+) -> Result<ResponseSent, W::Error>
+where
+    R: Read,
+    W: ResponseWriter<Error = R::Error>,
+    Handler: FnOnce(&'static RefCell<Vec<u8>>, Rc<RefCell<Framework>>) -> String,
+{
+    let payload = handler(state.encryption.0, state.framework.0.clone());
+    payload
+        .write_to(request.body_connection.finalize().await?, response_writer)
+        .await
+}
+
+async fn handle_framework_post<T, MoreState, R, W, Handler>(
+    state: &WebAppState<MoreState>,
+    mut request: Request<'_, R>,
+    response_writer: W,
+    handler: Handler,
+) -> Result<ResponseSent, W::Error>
+where
+    T: for<'r> FromRequest<'r, WebAppState<MoreState>, Rejection = EncryptedRejection>,
+    R: Read,
+    W: ResponseWriter<Error = R::Error>,
+    Handler: FnOnce(&'static RefCell<Vec<u8>>, Rc<RefCell<Framework>>, T) -> String,
+{
+    let input =
+        match extract_framework_request(state, request.parts, request.body_connection.body()).await
+        {
+            Ok(value) => value,
+            Err(err) => return write_framework_rejection(request, response_writer, err).await,
+        };
+
+    let payload = handler(state.encryption.0, state.framework.0.clone(), input);
+    payload
+        .write_to(request.body_connection.finalize().await?, response_writer)
+        .await
+}
+
+fn handle_framework_wifi_config_post(
+    key: &'static RefCell<Vec<u8>>,
+    framework: Rc<RefCell<Framework>>,
+    WifiConfigDTO { ssid, password }: WifiConfigDTO,
+) -> String {
+    match framework
+        .borrow_mut()
+        .set_wifi_credentials(&ssid, &password)
+    {
+        Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
+        Err(e) => SetConfigResponseDTO {
+            error_text: Some(format!("{e:?}")),
+        }
+        .encrypt(&key.borrow()),
+    }
+}
+
+fn handle_framework_wifi_config_get(
+    key: &'static RefCell<Vec<u8>>,
+    framework: Rc<RefCell<Framework>>,
+) -> String {
+    WifiConfigDTO {
+        ssid: framework
+            .borrow()
+            .wifi_ssid
+            .as_ref()
+            .unwrap_or(&String::from(""))
+            .clone(),
+        password: framework
+            .borrow()
+            .wifi_password
+            .as_ref()
+            .unwrap_or(&String::from(""))
+            .clone(),
+    }
+    .encrypt(&key.borrow())
+}
+
+fn handle_framework_device_name_config_post(
+    key: &'static RefCell<Vec<u8>>,
+    framework: Rc<RefCell<Framework>>,
+    DeviceNameDTO { name }: DeviceNameDTO,
+) -> String {
+    match framework.borrow_mut().set_device_name(&name) {
+        Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
+        Err(e) => SetConfigResponseDTO {
+            error_text: Some(format!("{e:?}")),
+        }
+        .encrypt(&key.borrow()),
+    }
+}
+
+fn handle_framework_device_name_config_get(
+    key: &'static RefCell<Vec<u8>>,
+    framework: Rc<RefCell<Framework>>,
+) -> String {
+    DeviceNameDTO {
+        name: framework
+            .borrow()
+            .device_name
+            .as_ref()
+            .unwrap_or(&String::from(""))
+            .clone(),
+    }
+    .encrypt(&key.borrow())
+}
+
+fn handle_framework_reset_device(
+    key: &'static RefCell<Vec<u8>>,
+    framework: Rc<RefCell<Framework>>,
+    ResetDeviceDTO {}: ResetDeviceDTO,
+) -> String {
+    framework.borrow_mut().reset_device_safer(None);
+    SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
+}
+
+fn handle_framework_display_config_post(
+    key: &'static RefCell<Vec<u8>>,
+    framework: Rc<RefCell<Framework>>,
+    DisplayConfigDTO {
+        dimming_timeout,
+        dimming_percent,
+        blackout_timeout,
+    }: DisplayConfigDTO,
+) -> String {
+    match framework.borrow_mut().set_display_settings(
+        dimming_timeout,
+        dimming_percent,
+        blackout_timeout,
+    ) {
+        Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
+        Err(e) => SetConfigResponseDTO {
+            error_text: Some(format!("{e:?}")),
+        }
+        .encrypt(&key.borrow()),
+    }
+}
+
+fn handle_framework_display_config_get(
+    key: &'static RefCell<Vec<u8>>,
+    framework: Rc<RefCell<Framework>>,
+) -> String {
+    let framework = framework.borrow();
+    DisplayConfigDTO {
+        dimming_timeout: framework.display_dimming_timeout,
+        dimming_percent: framework.display_dimming_percent,
+        blackout_timeout: framework.display_blackout_timeout,
+    }
+    .encrypt(&key.borrow())
+}
+
+fn handle_framework_test_key(
+    key: &'static RefCell<Vec<u8>>,
+    _framework: Rc<RefCell<Framework>>,
+    TestKeyDTO { test: _test }: TestKeyDTO,
+) -> String {
+    TestKeyResponseDTO { error_text: None }.encrypt(&key.borrow())
+}
+
+fn handle_framework_fixed_key_config(
+    key: &'static RefCell<Vec<u8>>,
+    framework: Rc<RefCell<Framework>>,
+    FixedKeyConfigDTO { key: fixed_key }: FixedKeyConfigDTO,
+) -> String {
+    match framework.borrow_mut().set_fixed_key(&fixed_key) {
+        Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
+        Err(e) => SetConfigResponseDTO {
+            error_text: Some(format!("{e:?}")),
+        }
+        .encrypt(&key.borrow()),
+    }
+}
+
+fn handle_framework_ota_request(
+    key: &'static RefCell<Vec<u8>>,
+    framework: Rc<RefCell<Framework>>,
+    OtaRequestDTO { request }: OtaRequestDTO,
+) -> String {
+    framework.borrow().submit_ota_request(request);
+    SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow())
+}
+
+fn handle_framework_ota_config_get(
+    key: &'static RefCell<Vec<u8>>,
+    framework: Rc<RefCell<Framework>>,
+) -> String {
+    let framework = framework.borrow();
+    OtaStatusDTO {
+        status: framework
+            .ota_state
+            .as_ref()
+            .map_or(String::new(), |s| s.to_string()),
+        curr_ver: framework.settings.app_cargo_pkg_version.to_string(),
+    }
+    .encrypt(&key.borrow())
+}
+
+#[derive(Clone, Copy)]
+enum ApiMethod {
+    Get,
+    Post,
+    Other,
+}
+
+impl From<&str> for ApiMethod {
+    fn from(method: &str) -> Self {
+        match method {
+            "GET" => Self::Get,
+            "POST" => Self::Post,
+            _ => Self::Other,
+        }
+    }
+}
+
+async fn extract_limited_body_string<'r, MoreState, R: Read>(
+    state: &'r WebAppState<MoreState>,
+    request: &'r mut Request<'_, R>,
+) -> Result<LimitedBodyString, BodyReadRejection> {
+    LimitedBodyString::from_request(state, request.parts, request.body_connection.body()).await
+}
+
+async fn handle_captive_test_key<MoreState, R: Read, W: ResponseWriter<Error = R::Error>>(
+    state: &WebAppState<MoreState>,
+    mut request: Request<'_, R>,
+    response_writer: W,
+) -> Result<ResponseSent, W::Error> {
+    let key = state.encryption.0;
+    let LimitedBodyString(body) = match extract_limited_body_string(state, &mut request).await {
+        Ok(value) => value,
+        Err(err) => {
+            return err
+                .write_to(request.body_connection.finalize().await?, response_writer)
+                .await
+        }
+    };
+
+    let response = if ctr_decrypt(&key.borrow(), body.as_bytes()).is_ok() {
+        (StatusCode::OK, "")
+    } else {
+        (StatusCode::FORBIDDEN, "")
+    };
+    response
+        .write_to(request.body_connection.finalize().await?, response_writer)
+        .await
+}
+
+async fn handle_captive_fixed_key_config<
+    MoreState,
+    R: Read,
+    W: ResponseWriter<Error = R::Error>,
+>(
+    state: &WebAppState<MoreState>,
+    mut request: Request<'_, R>,
+    response_writer: W,
+) -> Result<ResponseSent, W::Error> {
+    let key = state.encryption.0;
+    let framework = state.framework.0.clone();
+    let LimitedBodyString(body) = match extract_limited_body_string(state, &mut request).await {
+        Ok(value) => value,
+        Err(err) => {
+            return err
+                .write_to(request.body_connection.finalize().await?, response_writer)
+                .await
+        }
+    };
+
+    let response = match ctr_decrypt(&key.borrow(), body.as_bytes()) {
+        Ok(decrypted) => (
+            StatusCode::OK,
+            match serde_json::from_str::<FixedKeyConfigDTO>(&decrypted) {
+                Ok(fixed_key_config) => match framework
+                    .borrow_mut()
+                    .set_fixed_key(&fixed_key_config.key)
+                {
+                    Ok(_) => SetConfigResponseDTO { error_text: None }.ctr_encrypt(&key.borrow()),
+                    Err(e) => SetConfigResponseDTO {
+                        error_text: Some(format!("{e:?}")),
+                    }
+                    .ctr_encrypt(&key.borrow()),
+                },
+                Err(e) => SetConfigResponseDTO {
+                    error_text: Some(format!("{e:?}")),
+                }
+                .ctr_encrypt(&key.borrow()),
+            },
+        ),
+        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
+    };
+    response
+        .write_to(request.body_connection.finalize().await?, response_writer)
+        .await
+}
+
+async fn handle_captive_wifi_config_post<
+    MoreState,
+    R: Read,
+    W: ResponseWriter<Error = R::Error>,
+>(
+    state: &WebAppState<MoreState>,
+    mut request: Request<'_, R>,
+    response_writer: W,
+) -> Result<ResponseSent, W::Error> {
+    let key = state.encryption.0;
+    let framework = state.framework.0.clone();
+    let LimitedBodyString(body) = match extract_limited_body_string(state, &mut request).await {
+        Ok(value) => value,
+        Err(err) => {
+            return err
+                .write_to(request.body_connection.finalize().await?, response_writer)
+                .await
+        }
+    };
+
+    let response = match ctr_decrypt(&key.borrow(), body.as_bytes()) {
+        Ok(decrypted) => (
+            StatusCode::OK,
+            match serde_json::from_str::<WifiConfigDTO>(&decrypted) {
+                Ok(wifi_config) => match framework
+                    .borrow_mut()
+                    .set_wifi_credentials(&wifi_config.ssid, &wifi_config.password)
+                {
+                    Ok(_) => SetConfigResponseDTO { error_text: None }.ctr_encrypt(&key.borrow()),
+                    Err(e) => SetConfigResponseDTO {
+                        error_text: Some(format!("{e:?}")),
+                    }
+                    .ctr_encrypt(&key.borrow()),
+                },
+                Err(e) => SetConfigResponseDTO {
+                    error_text: Some(format!("{e:?}")),
+                }
+                .ctr_encrypt(&key.borrow()),
+            },
+        ),
+        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
+    };
+    response
+        .write_to(request.body_connection.finalize().await?, response_writer)
+        .await
+}
+
+async fn handle_captive_wifi_config_get<MoreState, R: Read, W: ResponseWriter<Error = R::Error>>(
+    state: &WebAppState<MoreState>,
+    request: Request<'_, R>,
+    response_writer: W,
+) -> Result<ResponseSent, W::Error> {
+    let key = state.encryption.0;
+    let framework = state.framework.0.borrow();
+    let payload = WifiConfigDTO {
+        ssid: framework
+            .wifi_ssid
+            .as_ref()
+            .unwrap_or(&String::from(""))
+            .clone(),
+        password: framework
+            .wifi_password
+            .as_ref()
+            .unwrap_or(&String::from(""))
+            .clone(),
+    }
+    .ctr_encrypt(&key.borrow());
+    payload
+        .write_to(request.body_connection.finalize().await?, response_writer)
+        .await
+}
+
+async fn handle_captive_device_name_config_post<
+    MoreState,
+    R: Read,
+    W: ResponseWriter<Error = R::Error>,
+>(
+    state: &WebAppState<MoreState>,
+    mut request: Request<'_, R>,
+    response_writer: W,
+) -> Result<ResponseSent, W::Error> {
+    let key = state.encryption.0;
+    let framework = state.framework.0.clone();
+    let LimitedBodyString(body) = match extract_limited_body_string(state, &mut request).await {
+        Ok(value) => value,
+        Err(err) => {
+            return err
+                .write_to(request.body_connection.finalize().await?, response_writer)
+                .await
+        }
+    };
+
+    let response = match ctr_decrypt(&key.borrow(), body.as_bytes()) {
+        Ok(decrypted) => (
+            StatusCode::OK,
+            match serde_json::from_str::<DeviceNameDTO>(&decrypted) {
+                Ok(device_name_config) => match framework
+                    .borrow_mut()
+                    .set_device_name(&device_name_config.name)
+                {
+                    Ok(_) => SetConfigResponseDTO { error_text: None }.ctr_encrypt(&key.borrow()),
+                    Err(e) => SetConfigResponseDTO {
+                        error_text: Some(format!("{e:?}")),
+                    }
+                    .ctr_encrypt(&key.borrow()),
+                },
+                Err(e) => SetConfigResponseDTO {
+                    error_text: Some(format!("{e:?}")),
+                }
+                .ctr_encrypt(&key.borrow()),
+            },
+        ),
+        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
+    };
+    response
+        .write_to(request.body_connection.finalize().await?, response_writer)
+        .await
+}
+
+async fn handle_captive_device_name_config_get<
+    MoreState,
+    R: Read,
+    W: ResponseWriter<Error = R::Error>,
+>(
+    state: &WebAppState<MoreState>,
+    request: Request<'_, R>,
+    response_writer: W,
+) -> Result<ResponseSent, W::Error> {
+    let key = state.encryption.0;
+    let framework = state.framework.0.borrow();
+    let payload = DeviceNameDTO {
+        name: framework
+            .device_name
+            .as_ref()
+            .unwrap_or(&String::from(""))
+            .clone(),
+    }
+    .ctr_encrypt(&key.borrow());
+    payload
+        .write_to(request.body_connection.finalize().await?, response_writer)
+        .await
+}
+
+async fn handle_captive_reset_device<MoreState, R: Read, W: ResponseWriter<Error = R::Error>>(
+    state: &WebAppState<MoreState>,
+    mut request: Request<'_, R>,
+    response_writer: W,
+) -> Result<ResponseSent, W::Error> {
+    let key = state.encryption.0;
+    let framework = state.framework.0.clone();
+    let LimitedBodyString(body) = match extract_limited_body_string(state, &mut request).await {
+        Ok(value) => value,
+        Err(err) => {
+            return err
+                .write_to(request.body_connection.finalize().await?, response_writer)
+                .await
+        }
+    };
+
+    let response = match ctr_decrypt(&key.borrow(), body.as_bytes()) {
+        Ok(_) => {
+            framework.borrow_mut().reset_device_safer(None);
+            (
+                StatusCode::OK,
+                SetConfigResponseDTO { error_text: None }.ctr_encrypt(&key.borrow()),
+            )
+        }
+        Err(e) => (StatusCode::FORBIDDEN, format!("Decryption Error: {e}")),
+    };
+    response
+        .write_to(request.body_connection.finalize().await?, response_writer)
+        .await
 }
 
 impl<MoreState> picoserve::routing::PathRouterService<WebAppState<MoreState>> for CustomNotFound {
