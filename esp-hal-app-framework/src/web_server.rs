@@ -25,7 +25,6 @@ use esp_mbedtls::{
 use super::{
     framework::{Framework, WebServerCommands, WebServerSubscriber},
     framework_web_app::{NestedAppWithWebAppStateBuilder, WebAppBuilder, WebAppState},
-    utils::AwaitHeap,
 };
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -389,7 +388,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
         }
 
         if web_server_config.tls {
-            serve_tls_connection(
+            let serve = Box::pin(serve_tls_connection(
                 web_server_config.web_app_name,
                 &task_id,
                 app,
@@ -399,11 +398,15 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
                 tls,
                 tls_credentials.unwrap(),
                 state,
-            )
-            .await_heap()
-            .await;
+            ));
+            info!(
+                "[{task_id}] {} HTTPS boxed serve future state={} bytes",
+                web_server_config.web_app_name,
+                core::mem::size_of_val(serve.as_ref().get_ref())
+            );
+            serve.await;
         } else {
-            serve_http_connection(
+            let serve = Box::pin(serve_http_connection(
                 web_server_config.web_app_name,
                 &task_id,
                 app,
@@ -411,9 +414,13 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
                 &mut *http_buffer,
                 socket,
                 state,
-            )
-            .await_heap()
-            .await;
+            ));
+            info!(
+                "[{task_id}] {} HTTP boxed serve future state={} bytes",
+                web_server_config.web_app_name,
+                core::mem::size_of_val(serve.as_ref().get_ref())
+            );
+            serve.await;
         }
     }
 }
