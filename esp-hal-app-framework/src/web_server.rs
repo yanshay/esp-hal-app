@@ -25,6 +25,7 @@ use esp_mbedtls::{
 use super::{
     framework::{Framework, WebServerCommands, WebServerSubscriber},
     framework_web_app::{NestedAppWithWebAppStateBuilder, WebAppBuilder, WebAppState},
+    utils::AwaitHeap,
 };
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -387,56 +388,112 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
             continue;
         }
 
-        socket.set_keep_alive(Some(Duration::from_secs(30)));
-        socket.set_timeout(Some(Duration::from_secs(45)));
-
-        let remote_endpoint = socket.remote_endpoint();
-
-        info!(
-            "[{task_id}] {} Web Application: Accepted connection from {remote_endpoint:?}",
-            web_server_config.web_app_name
-        );
         if web_server_config.tls {
-            debug!("[{task_id}] Serving HTTPS request");
-            let tls_config = ServerSessionConfig::new(tls_credentials.unwrap().clone());
-            let session = Session::new(tls, socket, &SessionConfig::Server(tls_config)).unwrap();
-
-            let wrapper = SessionWrapper::new(session);
-            let app_with_state = app.shared().with_state(state);
-
-            match picoserve::Server::new(&app_with_state, config, &mut *http_buffer)
-                .serve(wrapper)
-                .await
-            {
-                Ok(disconnection_info) => {
-                    info!(
-                        "[{task_id}] {} requests handled from {:?}",
-                        disconnection_info.handled_requests_count, remote_endpoint
-                    );
-                }
-                Err(err) => error!("[{task_id}] Error handling request: {:?}", &err),
-            }
+            serve_tls_connection(
+                web_server_config.web_app_name,
+                &task_id,
+                app,
+                config,
+                &mut *http_buffer,
+                socket,
+                tls,
+                tls_credentials.unwrap(),
+                state,
+            )
+            .await_heap()
+            .await;
         } else {
-            debug!("[{task_id}] Serving HTTP request");
-            let app_with_state = app.shared().with_state(state);
-            match picoserve::Server::new(&app_with_state, config, &mut *http_buffer)
-                .serve(socket)
-                .await
-            {
-                Ok(disconnection_info) => {
-                    info!(
-                        "[{task_id}] {} requests handled from {:?}",
-                        disconnection_info.handled_requests_count, remote_endpoint
-                    );
-                }
-                Err(err) => match err {
-                    picoserve::Error::ReadTimeout(_) => (),
-                    _ => {
-                        error!("[{task_id}] Error handling request : {:?}", &err);
-                    }
-                },
-            }
+            serve_http_connection(
+                web_server_config.web_app_name,
+                &task_id,
+                app,
+                config,
+                &mut *http_buffer,
+                socket,
+                state,
+            )
+            .await_heap()
+            .await;
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve_http_connection<P: routing::PathRouter<GenericAppState>, GenericAppState>(
+    web_app_name: &'static str,
+    task_id: impl LogDisplay,
+    app: &Router<P, GenericAppState>,
+    config: &Config,
+    http_buffer: &mut [u8],
+    mut socket: TcpSocket<'_>,
+    state: &GenericAppState,
+) {
+    socket.set_keep_alive(Some(Duration::from_secs(30)));
+    socket.set_timeout(Some(Duration::from_secs(45)));
+
+    let remote_endpoint = socket.remote_endpoint();
+    info!(
+        "[{task_id}] {web_app_name} Web Application: Accepted connection from {remote_endpoint:?}"
+    );
+    debug!("[{task_id}] Serving HTTP request");
+
+    let app_with_state = app.shared().with_state(state);
+    match picoserve::Server::new(&app_with_state, config, http_buffer)
+        .serve(socket)
+        .await
+    {
+        Ok(disconnection_info) => {
+            info!(
+                "[{task_id}] {} requests handled from {:?}",
+                disconnection_info.handled_requests_count, remote_endpoint
+            );
+        }
+        Err(err) => match err {
+            picoserve::Error::ReadTimeout(_) => (),
+            _ => {
+                error!("[{task_id}] Error handling request : {:?}", &err);
+            }
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve_tls_connection<P: routing::PathRouter<GenericAppState>, GenericAppState>(
+    web_app_name: &'static str,
+    task_id: impl LogDisplay,
+    app: &Router<P, GenericAppState>,
+    config: &Config,
+    http_buffer: &mut [u8],
+    mut socket: TcpSocket<'_>,
+    tls: TlsReference<'static>,
+    tls_credentials: &Credentials<'static>,
+    state: &GenericAppState,
+) {
+    socket.set_keep_alive(Some(Duration::from_secs(30)));
+    socket.set_timeout(Some(Duration::from_secs(45)));
+
+    let remote_endpoint = socket.remote_endpoint();
+    info!(
+        "[{task_id}] {web_app_name} Web Application: Accepted connection from {remote_endpoint:?}"
+    );
+    debug!("[{task_id}] Serving HTTPS request");
+
+    let tls_config = ServerSessionConfig::new(tls_credentials.clone());
+    let session = Session::new(tls, socket, &SessionConfig::Server(tls_config)).unwrap();
+    let wrapper = SessionWrapper::new(session);
+    let app_with_state = app.shared().with_state(state);
+
+    match picoserve::Server::new(&app_with_state, config, http_buffer)
+        .serve(wrapper)
+        .await
+    {
+        Ok(disconnection_info) => {
+            info!(
+                "[{task_id}] {} requests handled from {:?}",
+                disconnection_info.handled_requests_count, remote_endpoint
+            );
+        }
+        Err(err) => error!("[{task_id}] Error handling request: {:?}", &err),
     }
 }
 
