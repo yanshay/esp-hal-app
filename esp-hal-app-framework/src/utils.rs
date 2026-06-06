@@ -57,6 +57,11 @@ impl SpawnerHeapExt for Spawner {
     where
         Fut: Future<Output = ()> + 'static,
     {
+        // info!(
+        //     "spawn_heap task_state={} type={}",
+        //     core::mem::size_of::<Fut>(),
+        //     core::any::type_name::<Fut>()
+        // );
         let task = Box::leak(Box::new(TaskStorage::new())).spawn(|| fut);
         self.spawn(task)
     }
