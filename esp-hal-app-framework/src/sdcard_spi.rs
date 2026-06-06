@@ -100,11 +100,11 @@ where
 //     .with_mosi(sd_mosi)
 //     .into_async();
 //
-        // let sdcard_spi_device: ExclusiveDevice<
-        //     esp_hal::spi::master::Spi<'_, esp_hal::Async>,
-        //     esp_hal::gpio::Output<'_>,
-        //     embedded_hal_bus::spi::NoDelay,
-        // > = ExclusiveDevice::new_no_delay(spi_bus, sd_cs).unwrap();
+// let sdcard_spi_device: ExclusiveDevice<
+//     esp_hal::spi::master::Spi<'_, esp_hal::Async>,
+//     esp_hal::gpio::Output<'_>,
+//     embedded_hal_bus::spi::NoDelay,
+// > = ExclusiveDevice::new_no_delay(spi_bus, sd_cs).unwrap();
 
 //     ExclusiveDevice::new_no_delay(spi_bus, sd_cs).unwrap()
 // }

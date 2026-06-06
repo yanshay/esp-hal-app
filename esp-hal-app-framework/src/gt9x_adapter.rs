@@ -77,13 +77,10 @@ where
                 }
                 Err(err) => {
                     self.consecutive_read_errors = self.consecutive_read_errors.saturating_add(1);
-                    if self.consecutive_read_errors == 1
-                        || self.consecutive_read_errors % 20 == 0
-                    {
+                    if self.consecutive_read_errors == 1 || self.consecutive_read_errors % 20 == 0 {
                         warn!(
                             "GT9x read error ({} consecutive): {:?}",
-                            self.consecutive_read_errors,
-                            err
+                            self.consecutive_read_errors, err
                         );
                     }
                     Timer::after(self.config.polling_timeout).await;

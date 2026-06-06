@@ -53,7 +53,8 @@ impl DisplaySnapshotBmp {
         let pixel_count = width_usize
             .checked_mul(height_usize)
             .ok_or(DisplaySnapshotError::InvalidDimensions)?;
-        let row_stride = bmp_row_stride(width_usize).ok_or(DisplaySnapshotError::InvalidDimensions)?;
+        let row_stride =
+            bmp_row_stride(width_usize).ok_or(DisplaySnapshotError::InvalidDimensions)?;
         let image_size = row_stride
             .checked_mul(height_usize)
             .ok_or(DisplaySnapshotError::InvalidDimensions)?;
@@ -76,7 +77,8 @@ impl DisplaySnapshotBmp {
             .map_err(|_| DisplaySnapshotError::Allocation)?;
         row_buffer.resize(row_stride, 0);
 
-        let (rendered_width, rendered_height) = framework.render_display_snapshot_rgb565(&mut pixels)?;
+        let (rendered_width, rendered_height) =
+            framework.render_display_snapshot_rgb565(&mut pixels)?;
         if rendered_width != width || rendered_height != height {
             return Err(DisplaySnapshotError::InvalidDimensions);
         }
@@ -114,7 +116,10 @@ impl picoserve::response::chunked::Chunks for DisplaySnapshotBmp {
         Self::content_type()
     }
 
-    async fn write_chunks<W: picoserve::io::Write>(self, mut chunk_writer: ChunkWriter<W>) -> Result<ChunksWritten, W::Error> {
+    async fn write_chunks<W: picoserve::io::Write>(
+        self,
+        mut chunk_writer: ChunkWriter<W>,
+    ) -> Result<ChunksWritten, W::Error> {
         self.write_to(&mut chunk_writer).await?;
         chunk_writer.finalize().await
     }

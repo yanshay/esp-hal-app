@@ -17,36 +17,36 @@ pub mod backlight;
 pub mod display_snapshot;
 pub mod flash_map;
 pub mod framework;
+#[cfg(feature = "jc8048w550c")]
+pub mod jc8048w550c;
 pub mod ui_loop;
 #[cfg(feature = "wt32-sc01-plus")]
 pub mod wt32_sc01_plus;
-#[cfg(feature = "jc8048w550c")]
-pub mod jc8048w550c;
 
 #[macro_use]
 pub mod framework_web_app;
 pub mod improv_wifi;
 pub mod license;
 // pub mod sdcard;
-pub mod ota;
-pub mod sdcard_spi;
-pub mod sdcard_store;
-pub mod slint_ext;
-pub mod touch;
 #[cfg(feature = "wt32-sc01-plus")]
 pub mod ft6x36_adapter;
 #[cfg(feature = "jc8048w550c")]
 pub mod gt9x_adapter;
+pub mod ota;
 #[cfg(feature = "jc8048w550c")]
 #[path = "rgb-display.rs"]
 pub mod rgb_display;
+pub mod sdcard_spi;
+pub mod sdcard_store;
+pub mod slint_ext;
+pub mod touch;
 pub mod web_server;
 pub mod wifi;
 #[macro_use]
 pub mod utils;
-pub mod settings;
-pub mod ntp;
 pub mod mdns;
+pub mod ntp;
+pub mod settings;
 
 extern crate alloc;
 
@@ -54,11 +54,44 @@ extern crate alloc;
 compile_error!("Only one board feature can be enabled at a time");
 
 #[cfg(any(
-    all(feature = "log_none", any(feature = "log_trace", feature = "log_debug", feature = "log_info", feature = "log_warn", feature = "log_error", feature = "log_fatal")),
-    all(feature = "log_trace", any(feature = "log_debug", feature = "log_info", feature = "log_warn", feature = "log_error", feature = "log_fatal")),
-    all(feature = "log_debug", any(feature = "log_info", feature = "log_warn", feature = "log_error", feature = "log_fatal")),
-    all(feature = "log_info", any(feature = "log_warn", feature = "log_error", feature = "log_fatal")),
-    all(feature = "log_warn", any(feature = "log_error", feature = "log_fatal")),
+    all(
+        feature = "log_none",
+        any(
+            feature = "log_trace",
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal"
+        )
+    ),
+    all(
+        feature = "log_trace",
+        any(
+            feature = "log_debug",
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal"
+        )
+    ),
+    all(
+        feature = "log_debug",
+        any(
+            feature = "log_info",
+            feature = "log_warn",
+            feature = "log_error",
+            feature = "log_fatal"
+        )
+    ),
+    all(
+        feature = "log_info",
+        any(feature = "log_warn", feature = "log_error", feature = "log_fatal")
+    ),
+    all(
+        feature = "log_warn",
+        any(feature = "log_error", feature = "log_fatal")
+    ),
     all(feature = "log_error", feature = "log_fatal"),
 ))]
 compile_error!("Only one log level feature can be enabled at a time");
@@ -68,8 +101,8 @@ pub mod prelude {
     pub use crate::framework::Framework;
     pub use crate::framework::FrameworkSettings;
     pub use crate::license::LicenseManager;
-    pub use crate::warn;
     pub use crate::sdcard_store::{SDCardStore, SDCardStoreErrorSource};
+    pub use crate::warn;
     pub use dbg;
     pub use dbgt;
     pub use debug;

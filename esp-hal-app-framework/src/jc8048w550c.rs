@@ -5,10 +5,15 @@ use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal}
 use embassy_time::Timer;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::{
-    dma::{AnyGdmaChannel, BurstConfig, DmaChannelConvert, ExternalBurstConfig, InternalBurstConfig},
+    dma::{
+        AnyGdmaChannel, BurstConfig, DmaChannelConvert, ExternalBurstConfig, InternalBurstConfig,
+    },
     gpio::{Level, Output, OutputConfig},
-    lcd_cam::{LcdCam, lcd::dpi::{Config as DpiConfig, Dpi, Format, FrameTiming}},
-    ledc::{LowSpeed, channel::ChannelIFace, timer::TimerIFace},
+    lcd_cam::{
+        lcd::dpi::{Config as DpiConfig, Dpi, Format, FrameTiming},
+        LcdCam,
+    },
+    ledc::{channel::ChannelIFace, timer::TimerIFace, LowSpeed},
     peripherals::LCD_CAM,
     spi,
     time::Rate,
@@ -20,10 +25,10 @@ use crate::{
     gt9x_adapter::{Gt9xAdapter, Gt9xAdapterConfig, Jc8048w550cGt911},
     mk_static,
     rgb_display::{
-        FrameMode, FlushPolicy, RGBDisplayConfig, RGBDisplayDriver, RGBDisplayDmaStorage,
+        display_bounce_bytes, display_bounce_out_desc_count, display_m2m_desc_count,
+        display_precomputed_dst_ptr_count, display_precomputed_src_ptr_count, FlushPolicy,
+        FrameMode, RGBDisplayConfig, RGBDisplayDmaStorage, RGBDisplayDriver, RGBDisplayResources,
         RefillPolicy,
-        RGBDisplayResources, display_bounce_bytes, display_bounce_out_desc_count,
-        display_m2m_desc_count, display_precomputed_dst_ptr_count, display_precomputed_src_ptr_count,
     },
     sdcard_spi::create_sdcard_spi_device_dma,
     slint_ext::McuWindow,
@@ -164,7 +169,8 @@ impl UiRenderBackend for Jc8048w550cRenderBackend {
             }
 
             let frame = frame_guard.buffer_mut();
-            let pixel_count = frame.len() / core::mem::size_of::<slint::platform::software_renderer::Rgb565Pixel>();
+            let pixel_count = frame.len()
+                / core::mem::size_of::<slint::platform::software_renderer::Rgb565Pixel>();
             let pixels: &mut [slint::platform::software_renderer::Rgb565Pixel] =
                 unsafe { slice::from_raw_parts_mut(frame.as_mut_ptr() as *mut _, pixel_count) };
 
@@ -176,13 +182,13 @@ impl UiRenderBackend for Jc8048w550cRenderBackend {
             frame_guard
                 .present()
                 .expect("Failed to present RGB display frame");
-                // if self.double_buffering {
-                //     self.window.request_redraw();
-                // }
+            // if self.double_buffering {
+            //     self.window.request_redraw();
+            // }
             true
         } else {
             false // can't draw now, so skip drawing and return nothing was drawn, this will make slint_ext release the ui_loop right after to draw again
-            // self.window.request_redraw();
+                  // self.window.request_redraw();
         }
     }
 }
@@ -387,8 +393,14 @@ where
     P: esp_hal::i2c::master::Instance + 'static,
 {
     pub async fn run(&mut self) {
-        let peripherals = self.peripherals.take().expect("Display peripherals missing");
-        let frame_buffers = self.frame_buffers.take().expect("Display frame buffer missing");
+        let peripherals = self
+            .peripherals
+            .take()
+            .expect("Display peripherals missing");
+        let frame_buffers = self
+            .frame_buffers
+            .take()
+            .expect("Display frame buffer missing");
 
         let mut ledc = esp_hal::ledc::Ledc::new(peripherals.LEDC);
         ledc.set_global_slow_clock(esp_hal::ledc::LSGlobalClkSource::APBClk);
@@ -432,28 +444,29 @@ where
             .with_de_idle_level(Level::Low)
             .with_disable_black_region(false);
 
-        let dpi: Dpi<'static, esp_hal::Blocking> = Dpi::new(lcd_cam.lcd, peripherals.DMA_CH_DPI, dpi_cfg)
-            .unwrap()
-            .with_vsync(peripherals.GPIO41)
-            .with_hsync(peripherals.GPIO39)
-            .with_de(peripherals.GPIO40)
-            .with_pclk(peripherals.GPIO42)
-            .with_data0(peripherals.GPIO8)
-            .with_data1(peripherals.GPIO3)
-            .with_data2(peripherals.GPIO46)
-            .with_data3(peripherals.GPIO9)
-            .with_data4(peripherals.GPIO1)
-            .with_data5(peripherals.GPIO5)
-            .with_data6(peripherals.GPIO6)
-            .with_data7(peripherals.GPIO7)
-            .with_data8(peripherals.GPIO15)
-            .with_data9(peripherals.GPIO16)
-            .with_data10(peripherals.GPIO4)
-            .with_data11(peripherals.GPIO45)
-            .with_data12(peripherals.GPIO48)
-            .with_data13(peripherals.GPIO47)
-            .with_data14(peripherals.GPIO21)
-            .with_data15(peripherals.GPIO14);
+        let dpi: Dpi<'static, esp_hal::Blocking> =
+            Dpi::new(lcd_cam.lcd, peripherals.DMA_CH_DPI, dpi_cfg)
+                .unwrap()
+                .with_vsync(peripherals.GPIO41)
+                .with_hsync(peripherals.GPIO39)
+                .with_de(peripherals.GPIO40)
+                .with_pclk(peripherals.GPIO42)
+                .with_data0(peripherals.GPIO8)
+                .with_data1(peripherals.GPIO3)
+                .with_data2(peripherals.GPIO46)
+                .with_data3(peripherals.GPIO9)
+                .with_data4(peripherals.GPIO1)
+                .with_data5(peripherals.GPIO5)
+                .with_data6(peripherals.GPIO6)
+                .with_data7(peripherals.GPIO7)
+                .with_data8(peripherals.GPIO15)
+                .with_data9(peripherals.GPIO16)
+                .with_data10(peripherals.GPIO4)
+                .with_data11(peripherals.GPIO45)
+                .with_data12(peripherals.GPIO48)
+                .with_data13(peripherals.GPIO47)
+                .with_data14(peripherals.GPIO21)
+                .with_data15(peripherals.GPIO14);
 
         let (frame_mode, repaint_buffer_type, frames): (
             FrameMode,
@@ -530,7 +543,9 @@ where
 
         let window = McuWindow::new(repaint_buffer_type);
         window.set_size(slint::PhysicalSize::new(DISP_W as u32, DISP_H as u32));
-        self.framework.borrow_mut().set_display_window(window.clone());
+        self.framework
+            .borrow_mut()
+            .set_display_window(window.clone());
         slint::platform::set_platform(Box::new(EspBackend {
             window: window.clone(),
         }))
@@ -560,8 +575,10 @@ where
             .expect("Failed to initialize GT9x touch controller");
 
         let touch = Touch::new(Gt9xAdapter::new(touch_inner, self.touch_config));
-        let line_buffer =
-            mk_static!(AlignedLineBuffer, AlignedLineBuffer([slint::platform::software_renderer::Rgb565Pixel(0); DISP_W]));
+        let line_buffer = mk_static!(
+            AlignedLineBuffer,
+            AlignedLineBuffer([slint::platform::software_renderer::Rgb565Pixel(0); DISP_W])
+        );
         let render_backend = Jc8048w550cRenderBackend {
             display,
             line_buffer,
@@ -576,7 +593,13 @@ where
 
         self.init_done.signal(Ok(()));
 
-        crate::ui_loop::event_loop(touch, window, render_backend, backlight, self.framework.clone())
-            .await;
+        crate::ui_loop::event_loop(
+            touch,
+            window,
+            render_backend,
+            backlight,
+            self.framework.clone(),
+        )
+        .await;
     }
 }

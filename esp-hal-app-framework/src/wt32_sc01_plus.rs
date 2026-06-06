@@ -7,10 +7,8 @@ use esp_hal::{
     dma::DmaTxBuf,
     dma_buffers,
     gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull},
-    lcd_cam::{
-        LcdCam, lcd::i8080::I8080Transfer
-    },
-    ledc::{LowSpeed, channel::ChannelIFace, timer::TimerIFace},
+    lcd_cam::{lcd::i8080::I8080Transfer, LcdCam},
+    ledc::{channel::ChannelIFace, timer::TimerIFace, LowSpeed},
     peripherals::LCD_CAM,
     spi,
     time::Rate,
@@ -19,13 +17,8 @@ use mipidsi::models::ST7796;
 use slint::platform::software_renderer::Rgb565Pixel;
 
 use crate::{
-    backlight::BacklightDevice,
-    ft6x36_adapter::Ft6x36TouchAdapter,
-    framework::Framework,
-    mk_static,
-    sdcard_spi::create_sdcard_spi_device_dma,
-    slint_ext::McuWindow,
-    touch::Touch,
+    backlight::BacklightDevice, framework::Framework, ft6x36_adapter::Ft6x36TouchAdapter,
+    mk_static, sdcard_spi::create_sdcard_spi_device_dma, slint_ext::McuWindow, touch::Touch,
     ui_loop::UiRenderBackend,
 };
 
@@ -521,7 +514,10 @@ where
 
         let ti_sda = peripherals.GPIO6; //.into_push_pull_output();
         let ti_scl = peripherals.GPIO5; //.into_push_pull_output();
-        let ti_irq = Input::new(peripherals.GPIO7, InputConfig::default().with_pull(Pull::Down)); //.into_push_pull_output();
+        let ti_irq = Input::new(
+            peripherals.GPIO7,
+            InputConfig::default().with_pull(Pull::Down),
+        ); //.into_push_pull_output();
 
         // TODO: Check the option of switching to async I2C instead of my own interrupt approach
         // let _ti_i2c = esp_hal::i2c::master::I2c::new(peripherals.I2C0, {
@@ -561,7 +557,9 @@ where
         let window =
             McuWindow::new(slint::platform::software_renderer::RepaintBufferType::ReusedBuffer);
         window.set_size(size);
-        self.framework.borrow_mut().set_display_window(window.clone());
+        self.framework
+            .borrow_mut()
+            .set_display_window(window.clone());
         slint::platform::set_platform(Box::new(EspBackend {
             window: window.clone(),
         }))
@@ -591,8 +589,14 @@ where
 
         self.init_done.signal(Ok(()));
 
-        crate::ui_loop::event_loop(touch, window, render_backend, backlight, self.framework.clone())
-            .await;
+        crate::ui_loop::event_loop(
+            touch,
+            window,
+            render_backend,
+            backlight,
+            self.framework.clone(),
+        )
+        .await;
     }
 }
 

@@ -27,7 +27,6 @@ pub fn random_u64() -> u64 {
     u64::from_le_bytes(buf)
 }
 
-
 // Helper for using Snafu
 
 pub struct DebugWrap<E>(pub E);

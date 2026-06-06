@@ -577,7 +577,10 @@ impl<'s> picoserve::io::Socket<picoserve::EmbassyRuntime> for SessionWrapper<'s>
         timer: &mut Timer,
     ) -> Result<(), picoserve::Error<Self::Error>> {
         info!("TLS shutdown started");
-        match timer.run_with_timeout(timeouts.write, self.graceful_close()).await {
+        match timer
+            .run_with_timeout(timeouts.write, self.graceful_close())
+            .await
+        {
             Ok(Ok(())) => {
                 info!("TLS shutdown completed gracefully");
                 Ok(())

@@ -12,7 +12,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use base64::{engine::general_purpose::STANDARD_NO_PAD, encoded_len, Engine as _};
+use base64::{encoded_len, engine::general_purpose::STANDARD_NO_PAD, Engine as _};
 use embassy_time::Timer;
 use framework_macros::include_bytes_gz;
 use hmac::{Hmac, Mac};
@@ -793,7 +793,11 @@ pub fn encrypt_bytes(key_bytes: &[u8], data: &[u8]) -> String {
     res
 }
 
-pub fn encrypt_bytes_compact<E, F>(key_bytes: &[u8], plaintext_len: usize, write_plaintext: F) -> Result<String, E>
+pub fn encrypt_bytes_compact<E, F>(
+    key_bytes: &[u8],
+    plaintext_len: usize,
+    write_plaintext: F,
+) -> Result<String, E>
 where
     F: FnOnce(&mut [u8]) -> Result<(), E>,
 {
@@ -804,10 +808,17 @@ where
 
     assert!(!key_bytes.is_empty());
 
-    let ciphertext_len = plaintext_len.checked_add(TAG_LEN).expect("usize overflow when calculating ciphertext size");
-    let ciphertext_b64_len = encoded_len(ciphertext_len, false).expect("usize overflow when calculating base64 size");
-    let final_len = IV_B64_LEN.checked_add(ciphertext_b64_len).expect("usize overflow when calculating encrypted size");
-    let working_len = final_len.checked_add(OVERLAP_SLACK).expect("usize overflow when calculating encrypted buffer size");
+    let ciphertext_len = plaintext_len
+        .checked_add(TAG_LEN)
+        .expect("usize overflow when calculating ciphertext size");
+    let ciphertext_b64_len =
+        encoded_len(ciphertext_len, false).expect("usize overflow when calculating base64 size");
+    let final_len = IV_B64_LEN
+        .checked_add(ciphertext_b64_len)
+        .expect("usize overflow when calculating encrypted size");
+    let working_len = final_len
+        .checked_add(OVERLAP_SLACK)
+        .expect("usize overflow when calculating encrypted buffer size");
     let mut buffer = vec![0_u8; working_len];
 
     let mut iv_bytes = [0u8; IV_LEN];
@@ -835,7 +846,8 @@ where
     let bytes_written = unsafe {
         let ptr = buffer.as_mut_ptr();
         let ciphertext = core::slice::from_raw_parts(ptr.add(ciphertext_start), ciphertext_len);
-        let ciphertext_b64 = core::slice::from_raw_parts_mut(ptr.add(IV_B64_LEN), ciphertext_b64_len);
+        let ciphertext_b64 =
+            core::slice::from_raw_parts_mut(ptr.add(IV_B64_LEN), ciphertext_b64_len);
         STANDARD_NO_PAD
             .encode_slice(ciphertext, ciphertext_b64)
             .expect("ciphertext base64 buffer should be large enough")

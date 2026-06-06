@@ -89,7 +89,8 @@ where
                 // if touch is already pressed, wait for either (a) release of touch or (b) timeout
                 // in other words, start polling and check if need to generate a touch event (on move, or release) every x millisec
                 // and if a release of the interrupt line (meaning depress) happens earlier response will be faster than the x millisec polling
-                let wait_res = with_timeout(Duration::from_millis(200), self.irq.wait_for_high()).await;
+                let wait_res =
+                    with_timeout(Duration::from_millis(200), self.irq.wait_for_high()).await;
                 if let Ok(irq_wait_res) = wait_res {
                     if irq_wait_res.is_err() {
                         panic!("Touch IRQ wait_for_high failed");

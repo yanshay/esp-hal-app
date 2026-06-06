@@ -1,9 +1,9 @@
 use alloc::{boxed::Box, rc::Rc};
 use core::cell::RefCell;
 
-use embassy_futures::select::{Either3, Either4, select3, select4};
+use embassy_futures::select::{select3, select4, Either3, Either4};
 use embassy_time::{Duration, Timer};
-use slint::platform::{WindowEvent, update_timers_and_animations};
+use slint::platform::{update_timers_and_animations, WindowEvent};
 
 use crate::{
     backlight::{BacklightConfig, BacklightController, BacklightDevice},
@@ -66,9 +66,7 @@ pub async fn event_loop<T, R, B>(
         // draw at the beginning, for first time drawing, in case (common) will await following that
         slint::platform::update_timers_and_animations();
 
-        window.draw_if_needed(|renderer| {
-            render_backend.render(renderer)
-        });
+        window.draw_if_needed(|renderer| render_backend.render(renderer));
 
         let async_res;
 
@@ -123,7 +121,9 @@ pub async fn event_loop<T, R, B>(
             Either4::First(_) | Either4::Fourth(_) => {
                 // Start with common to touch and undim - need to undim the display
                 slint::platform::update_timers_and_animations();
-                if backlight_controller.is_partially_dimmed() || backlight_controller.is_fully_dimmed() {
+                if backlight_controller.is_partially_dimmed()
+                    || backlight_controller.is_fully_dimmed()
+                {
                     trace!("Undimming the display");
                 }
                 backlight_controller

@@ -1,7 +1,6 @@
 use core::cell::RefCell;
 
 use critical_section::Mutex;
-use esp_hal::Blocking;
 use esp_hal::dma::{
     self, AnyGdmaChannel, BurstConfig, DmaChannelConvert, DmaDescriptor, DmaEligible, DmaTxBuffer,
     ExternalBurstConfig, InternalBurstConfig, Mem2Mem, Preparation, SimpleMem2Mem,
@@ -10,10 +9,11 @@ use esp_hal::dma::{
 use esp_hal::handler;
 use esp_hal::interrupt::{self, Priority};
 use esp_hal::lcd_cam::lcd::dpi::{Dpi, DpiTransfer};
-use esp_hal::peripherals::{DMA, Interrupt};
+use esp_hal::peripherals::{Interrupt, DMA};
 use esp_hal::ram;
 use esp_hal::system::Cpu;
 use esp_hal::time::Instant;
+use esp_hal::Blocking;
 use static_cell::StaticCell;
 
 pub enum FrameMode {
@@ -211,12 +211,12 @@ pub struct RGBDisplayDmaStorage<
 }
 
 impl<
-    const BOUNCE_BYTES: usize,
-    const BOUNCE_OUT_DESC_COUNT: usize,
-    const M2M_DESC_COUNT: usize,
-    const PRECOMPUTED_SRC_PTR_COUNT: usize,
-    const PRECOMPUTED_DST_PTR_COUNT: usize,
->
+        const BOUNCE_BYTES: usize,
+        const BOUNCE_OUT_DESC_COUNT: usize,
+        const M2M_DESC_COUNT: usize,
+        const PRECOMPUTED_SRC_PTR_COUNT: usize,
+        const PRECOMPUTED_DST_PTR_COUNT: usize,
+    >
     RGBDisplayDmaStorage<
         BOUNCE_BYTES,
         BOUNCE_OUT_DESC_COUNT,

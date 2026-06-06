@@ -31,14 +31,14 @@ use super::{
     flash_map::FlashMap, framework_web_app::derive_key, ota::ota_task, terminal::Terminal,
 };
 use crate::{
-    mdns::mdns_task, ntp::ntp_task, ota::OtaRequest, sdcard_store::SDCardStore,
-    web_server::WebServerCommand,
-};
-use crate::{
     display_snapshot::{DisplaySnapshotBmp, DisplaySnapshotError},
     settings::{FILE_STORE_MAX_DIRS, FILE_STORE_MAX_FILES},
     slint_ext::{McuWindow, SnapshotError},
     utils::SpawnerHeapExt,
+};
+use crate::{
+    mdns::mdns_task, ntp::ntp_task, ota::OtaRequest, sdcard_store::SDCardStore,
+    web_server::WebServerCommand,
 };
 
 pub type SDCardStoreType = SDCardStore<
@@ -345,7 +345,9 @@ impl Framework {
                         self.wifi_ssid = (!value.is_empty()).then(|| value.to_string());
                         term_info!("Loaded WiFi credentials from SDCard (overriding Flash)");
                     }
-                    "wifi_password" => self.wifi_password = (!value.is_empty()).then(|| value.to_string()),
+                    "wifi_password" => {
+                        self.wifi_password = (!value.is_empty()).then(|| value.to_string())
+                    }
                     "fixed_key" => {
                         self.fixed_key = Some(String::from(value));
                     }

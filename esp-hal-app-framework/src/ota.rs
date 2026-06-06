@@ -422,7 +422,11 @@ pub async fn run_ota(
                         );
                             Timer::after_millis(1000).await;
                         }
-                        Framework::reset_device_safer_async(framework.clone(), Some(Duration::from_secs(5))).await;
+                        Framework::reset_device_safer_async(
+                            framework.clone(),
+                            Some(Duration::from_secs(5)),
+                        )
+                        .await;
                     }
                     Err(e) => {
                         report(Report::Failure, &format!("Flashing error: {e:?}"));

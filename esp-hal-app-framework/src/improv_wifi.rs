@@ -150,33 +150,33 @@ impl ImprovWifiPacket {
         }
 
         let mut parser = Parser::new(input_data);
-        
+
         // Read magic
         parser.read_magic(b"IMPROV\x01")?;
-        
+
         // Read data_type and data_length
         let data_type = parser.read_u8()?;
         let data_length = parser.read_u8()?;
-        
+
         // Read data
         let data = ImprovWifiPacketData::parse(&mut parser, data_type)?;
-        
+
         // Read checksum
         let checksum = parser.read_u8()?;
-        
+
         // Read always_ten
         let always_ten = AlwaysTen::parse(&mut parser)?;
-        
+
         // Verify checksum (all bytes except checksum and always_ten)
         let checksum_end = parser.pos - 2; // exclude checksum and 0x0A
         let calculated_checksum: u8 = input_data[..checksum_end]
             .iter()
             .fold(0, |acc, &x| acc.wrapping_add(x));
-        
+
         if checksum != calculated_checksum {
             return Err(ParseError::InvalidChecksum);
         }
-        
+
         let packet = ImprovWifiPacket {
             data_type,
             data_length,
@@ -184,7 +184,7 @@ impl ImprovWifiPacket {
             checksum,
             always_ten,
         };
-        
+
         Ok(((&input_data[parser.pos..], 0), packet))
     }
 
@@ -209,7 +209,7 @@ impl ImprovWifiPacket {
             data: ImprovWifiPacketData::ErrorState(error_state_option),
         }
     }
-    
+
     pub fn new_rpc_result(rpc_result: RPCResultStruct) -> Self {
         ImprovWifiPacket {
             data_type: 0,
@@ -237,30 +237,31 @@ impl ImprovWifiPacket {
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, ParseError> {
         let mut writer = Writer::new();
-        
+
         // Write magic
         writer.write_magic(b"IMPROV\x01");
-        
+
         // Write data_type (derived from data)
         let data_type = self.data.get_type_id();
         writer.write_u8(data_type);
-        
+
         // Write data_length (derived from data)
         let data_length = self.data.get_data_length();
         writer.write_u8(data_length);
-        
+
         // Write data
         self.data.write(&mut writer);
-        
+
         // Calculate and write checksum (all bytes so far)
-        let checksum: u8 = writer.as_slice()
+        let checksum: u8 = writer
+            .as_slice()
             .iter()
             .fold(0, |acc, &x| acc.wrapping_add(x));
         writer.write_u8(checksum);
-        
+
         // Write always_ten
         self.always_ten.write(&mut writer);
-        
+
         Ok(writer.into_vec())
     }
 }
@@ -276,10 +277,16 @@ pub enum ImprovWifiPacketData {
 impl ImprovWifiPacketData {
     fn parse(parser: &mut Parser, data_type: u8) -> Result<Self, ParseError> {
         match data_type {
-            0x01 => Ok(ImprovWifiPacketData::CurrentState(CurrentStateOption::parse(parser)?)),
-            0x02 => Ok(ImprovWifiPacketData::ErrorState(ErrorStateOption::parse(parser)?)),
+            0x01 => Ok(ImprovWifiPacketData::CurrentState(
+                CurrentStateOption::parse(parser)?,
+            )),
+            0x02 => Ok(ImprovWifiPacketData::ErrorState(ErrorStateOption::parse(
+                parser,
+            )?)),
             0x03 => Ok(ImprovWifiPacketData::RPC(RPCCommandStruct::parse(parser)?)),
-            0x04 => Ok(ImprovWifiPacketData::RPCResult(RPCResultStruct::parse(parser)?)),
+            0x04 => Ok(ImprovWifiPacketData::RPCResult(RPCResultStruct::parse(
+                parser,
+            )?)),
             _ => Err(ParseError::InvalidDataType(data_type)),
         }
     }
@@ -400,7 +407,7 @@ impl RPCCommandStruct {
         let command = parser.read_u8()?;
         let data_length = parser.read_u8()?;
         let data = RPCCommand::parse(parser, command)?;
-        
+
         Ok(RPCCommandStruct {
             command,
             data_length,
@@ -412,11 +419,11 @@ impl RPCCommandStruct {
         // Write command (derived from data)
         let command = self.data.get_command_id();
         writer.write_u8(command);
-        
+
         // Write data_length (derived from data)
         let data_length = self.data.get_data_length();
         writer.write_u8(data_length);
-        
+
         // Write data
         self.data.write(writer);
     }
@@ -438,7 +445,9 @@ pub enum RPCCommand {
 impl RPCCommand {
     fn parse(parser: &mut Parser, command: u8) -> Result<Self, ParseError> {
         match command {
-            0x01 => Ok(RPCCommand::SendWifiSettings(SendWifiSettingsStruct::parse(parser)?)),
+            0x01 => Ok(RPCCommand::SendWifiSettings(SendWifiSettingsStruct::parse(
+                parser,
+            )?)),
             0x02 => Ok(RPCCommand::RequestCurrentState),
             0x03 => Ok(RPCCommand::RequestDeviceInformation),
             0x04 => Ok(RPCCommand::RequestScannedWifiNetworks),
@@ -449,9 +458,9 @@ impl RPCCommand {
     fn write(&self, writer: &mut Writer) {
         match self {
             RPCCommand::SendWifiSettings(s) => s.write(writer),
-            RPCCommand::RequestCurrentState => {},
-            RPCCommand::RequestDeviceInformation => {},
-            RPCCommand::RequestScannedWifiNetworks => {},
+            RPCCommand::RequestCurrentState => {}
+            RPCCommand::RequestDeviceInformation => {}
+            RPCCommand::RequestScannedWifiNetworks => {}
         }
     }
 
@@ -514,15 +523,15 @@ impl RPCResultStruct {
     fn parse(parser: &mut Parser) -> Result<Self, ParseError> {
         let command_responded = parser.read_u8()?;
         let strings_data_length = parser.read_u8()?;
-        
+
         // Read strings until we've consumed strings_data_length bytes
         let mut strings = Vec::new();
         let start_pos = parser.pos;
-        
+
         while parser.pos - start_pos < strings_data_length as usize {
             strings.push(parser.read_string()?);
         }
-        
+
         Ok(RPCResultStruct {
             command_responded,
             strings_data_length,
@@ -532,11 +541,11 @@ impl RPCResultStruct {
 
     fn write(&self, writer: &mut Writer) {
         writer.write_u8(self.command_responded);
-        
+
         // Write strings_data_length (calculated)
         let strings_data_length = Self::get_strings_data_length(&self.strings);
         writer.write_u8(strings_data_length);
-        
+
         // Write all strings
         for s in &self.strings {
             writer.write_string(s);
