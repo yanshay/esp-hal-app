@@ -19,7 +19,7 @@ use pbkdf2::pbkdf2_hmac;
 use picoserve::{
     extract::FromRequest,
     io::Read,
-    request::{Path, Request, RequestBody, RequestParts},
+    request::{Path, Request, RequestBody, RequestBodyConnection, RequestParts},
     response::{IntoResponse, Redirect, ResponseWriter, StatusCode},
     routing::{PathRouter, PathRouterService, RequestHandlerService},
     AppWithStateBuilder, ResponseSent,
@@ -193,7 +193,12 @@ pub trait NestedAppWithWebAppState<MoreState> {
     ) -> Result<ResponseSent, W::Error>
     where
         R: Read,
-        W: ResponseWriter<Error = R::Error>;
+        W: ResponseWriter<Error = R::Error>,
+    {
+        default_fallback
+            .call_path_router_service(state, (), path, request, response_writer)
+            .await
+    }
 }
 
 pub trait NestedAppWithWebAppStateBuilder<MoreState> {
@@ -548,7 +553,7 @@ where
     }
 }
 
-async fn extract_framework_request<T, MoreState, R: Read>(
+pub async fn extract_web_app_request<T, MoreState, R: Read>(
     state: &WebAppState<MoreState>,
     request_parts: RequestParts<'_>,
     request_body: RequestBody<'_, R>,
@@ -559,17 +564,17 @@ where
     T::from_request(state, request_parts, request_body).await
 }
 
-async fn write_framework_rejection<
+pub async fn write_rejection<
     R: Read,
     W: ResponseWriter<Error = R::Error>,
     Rejection: IntoResponse,
 >(
-    request: Request<'_, R>,
+    body_connection: RequestBodyConnection<'_, R>,
     response_writer: W,
     rejection: Rejection,
 ) -> Result<ResponseSent, W::Error> {
     rejection
-        .write_to(request.body_connection.finalize().await?, response_writer)
+        .write_to(body_connection.finalize().await?, response_writer)
         .await
 }
 
@@ -602,12 +607,12 @@ where
     W: ResponseWriter<Error = R::Error>,
     Handler: FnOnce(&'static RefCell<Vec<u8>>, Rc<RefCell<Framework>>, T) -> String,
 {
-    let input =
-        match extract_framework_request(state, request.parts, request.body_connection.body()).await
-        {
-            Ok(value) => value,
-            Err(err) => return write_framework_rejection(request, response_writer, err).await,
-        };
+    let input = match extract_web_app_request(state, request.parts, request.body_connection.body())
+        .await
+    {
+        Ok(value) => value,
+        Err(err) => return write_rejection(request.body_connection, response_writer, err).await,
+    };
 
     let payload = handler(state.encryption.0, state.framework.0.clone(), input);
     payload
