@@ -157,10 +157,49 @@ impl<'r, MoreState> FromRequest<'r, WebAppState<MoreState>> for LimitedBodyStrin
     }
 }
 
-pub trait NestedAppWithWebAppStateBuilder<MoreState>:
-    AppWithStateBuilder<State = WebAppState<MoreState>>
+pub enum RouteAttempt<'p, 'r, R, W>
+where
+    R: Read,
+    W: ResponseWriter<Error = R::Error>,
 {
-    fn path_description(&self) -> &'static str;
+    Handled(Result<ResponseSent, W::Error>),
+    NotMatched {
+        path: Path<'p>,
+        request: Request<'r, R>,
+        response_writer: W,
+    },
+}
+
+#[allow(async_fn_in_trait)]
+pub trait NestedAppWithWebAppState<MoreState> {
+    async fn try_handle_route<'p, 'r, R, W>(
+        &self,
+        state: &WebAppState<MoreState>,
+        path: Path<'p>,
+        request: Request<'r, R>,
+        response_writer: W,
+    ) -> RouteAttempt<'p, 'r, R, W>
+    where
+        R: Read,
+        W: ResponseWriter<Error = R::Error>;
+
+    async fn handle_fallback<'p, 'r, R, W>(
+        &self,
+        state: &WebAppState<MoreState>,
+        path: Path<'p>,
+        request: Request<'r, R>,
+        response_writer: W,
+        default_fallback: &CustomNotFound,
+    ) -> Result<ResponseSent, W::Error>
+    where
+        R: Read,
+        W: ResponseWriter<Error = R::Error>;
+}
+
+pub trait NestedAppWithWebAppStateBuilder<MoreState> {
+    type WebApp: NestedAppWithWebAppState<MoreState>;
+
+    fn build_web_app(self) -> Self::WebApp;
 }
 
 pub struct WebAppBuilder<
@@ -181,11 +220,16 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
     type PathRouter = impl PathRouter<WebAppState<MoreState>>;
 
     fn build_app(self) -> picoserve::Router<Self::PathRouter, Self::State> {
-        let nested_app = self.app_builder.build_app();
+        let nested_app = self.app_builder.build_web_app();
+        let default_fallback = CustomNotFound {
+            web_server_captive: self.framework.borrow().settings.web_server_captive,
+        };
         picoserve::Router::from_service(FrameworkWebService {
             nested_app,
+            default_fallback,
             captive_html_gz: self.captive_html_gz,
             web_app_html_gz: self.web_app_html_gz,
+            _phantom: PhantomData,
         })
     }
 }
@@ -194,37 +238,57 @@ pub struct CustomNotFound {
     pub web_server_captive: bool,
 }
 
+pub fn log_boxed_route_future_state(size: usize) {
+    info!("boxed route future state={} bytes", size);
+}
+
+#[macro_export]
 macro_rules! box_route_future {
+    ($body:expr) => {{
+        let route = alloc::boxed::Box::pin(async move { $body });
+        $crate::framework_web_app::log_boxed_route_future_state(core::mem::size_of_val(
+            route.as_ref().get_ref(),
+        ));
+        route.await
+    }};
+}
+
+#[macro_export]
+macro_rules! handled_route_future {
     ($body:expr) => {
-        alloc::boxed::Box::pin(async move { $body }).await
+        $crate::framework_web_app::RouteAttempt::Handled($crate::box_route_future!($body))
     };
 }
 
-struct FrameworkWebService<MoreState, NestedPathRouter>
+struct FrameworkWebService<MoreState, NestedApp>
 where
-    NestedPathRouter: PathRouter<WebAppState<MoreState>>,
+    NestedApp: NestedAppWithWebAppState<MoreState>,
 {
-    nested_app: picoserve::Router<NestedPathRouter, WebAppState<MoreState>>,
+    nested_app: NestedApp,
+    default_fallback: CustomNotFound,
     captive_html_gz: &'static [u8],
     web_app_html_gz: &'static [u8],
+    _phantom: PhantomData<MoreState>,
 }
 
-impl<MoreState, NestedPathRouter> PathRouterService<WebAppState<MoreState>>
-    for FrameworkWebService<MoreState, NestedPathRouter>
+impl<MoreState, NestedApp> FrameworkWebService<MoreState, NestedApp>
 where
-    NestedPathRouter: PathRouter<WebAppState<MoreState>>,
+    NestedApp: NestedAppWithWebAppState<MoreState>,
 {
-    async fn call_path_router_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+    async fn try_handle_framework_route<'p, 'r, R, W>(
         &self,
         state: &WebAppState<MoreState>,
-        (): (),
-        path: Path<'_>,
-        request: Request<'_, R>,
+        path: Path<'p>,
+        request: Request<'r, R>,
         response_writer: W,
-    ) -> Result<ResponseSent, W::Error> {
+    ) -> RouteAttempt<'p, 'r, R, W>
+    where
+        R: Read,
+        W: ResponseWriter<Error = R::Error>,
+    {
         let method = ApiMethod::from(request.parts.method());
         match (method, path.encoded()) {
-            (ApiMethod::Get, "/crypto-js-4.2.0.min.js") => box_route_future!({
+            (ApiMethod::Get, "/crypto-js-4.2.0.min.js") => handled_route_future!({
                 picoserve::response::File::with_content_type_and_headers(
                     "application/javascript; charset=utf-8",
                     include_bytes_gz!("src/static/crypto-js-4.2.0.min.js"),
@@ -233,7 +297,7 @@ where
                 .call_request_handler_service(state, (), request, response_writer)
                 .await
             }),
-            (ApiMethod::Get, "/captive") => box_route_future!({
+            (ApiMethod::Get, "/captive") => handled_route_future!({
                 picoserve::response::File::with_content_type_and_headers(
                     "text/html",
                     self.captive_html_gz,
@@ -243,39 +307,41 @@ where
                 .await
             }),
             (ApiMethod::Post, "/captive/api/test-key") => {
-                box_route_future!(handle_captive_test_key(state, request, response_writer).await)
+                handled_route_future!(
+                    handle_captive_test_key(state, request, response_writer).await
+                )
             }
             (ApiMethod::Post, "/captive/api/fixed-key-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_captive_fixed_key_config(state, request, response_writer).await
                 )
             }
             (ApiMethod::Post, "/captive/api/wifi-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_captive_wifi_config_post(state, request, response_writer).await
                 )
             }
             (ApiMethod::Get, "/captive/api/wifi-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_captive_wifi_config_get(state, request, response_writer).await
                 )
             }
             (ApiMethod::Post, "/captive/api/device-name-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_captive_device_name_config_post(state, request, response_writer).await
                 )
             }
             (ApiMethod::Get, "/captive/api/device-name-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_captive_device_name_config_get(state, request, response_writer).await
                 )
             }
             (ApiMethod::Post, "/captive/api/reset-device") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_captive_reset_device(state, request, response_writer).await
                 )
             }
-            (ApiMethod::Get, "/config") => box_route_future!({
+            (ApiMethod::Get, "/config") => handled_route_future!({
                 picoserve::response::File::with_content_type_and_headers(
                     "text/html",
                     self.web_app_html_gz,
@@ -284,7 +350,7 @@ where
                 .call_request_handler_service(state, (), request, response_writer)
                 .await
             }),
-            (ApiMethod::Get, "/pkg/device_wasm_bg.wasm") => box_route_future!({
+            (ApiMethod::Get, "/pkg/device_wasm_bg.wasm") => handled_route_future!({
                 picoserve::response::File::with_content_type_and_headers(
                     "application/wasm",
                     include_bytes_gz!("src/static/device_wasm_bg.wasm"),
@@ -293,7 +359,7 @@ where
                 .call_request_handler_service(state, (), request, response_writer)
                 .await
             }),
-            (ApiMethod::Get, "/pkg/device_wasm.js") => box_route_future!({
+            (ApiMethod::Get, "/pkg/device_wasm.js") => handled_route_future!({
                 picoserve::response::File::with_content_type_and_headers(
                     "application/javascript; charset=utf-8",
                     include_bytes_gz!("src/static/device_wasm.js"),
@@ -303,7 +369,7 @@ where
                 .await
             }),
             (ApiMethod::Post, "/api/wifi-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_post(
                         state,
                         request,
@@ -314,7 +380,7 @@ where
                 )
             }
             (ApiMethod::Get, "/api/wifi-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_get(
                         request,
                         response_writer,
@@ -325,7 +391,7 @@ where
                 )
             }
             (ApiMethod::Post, "/api/device-name-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_post(
                         state,
                         request,
@@ -336,7 +402,7 @@ where
                 )
             }
             (ApiMethod::Get, "/api/device-name-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_get(
                         request,
                         response_writer,
@@ -347,7 +413,7 @@ where
                 )
             }
             (ApiMethod::Post, "/api/reset-device") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_post(
                         state,
                         request,
@@ -358,7 +424,7 @@ where
                 )
             }
             (ApiMethod::Post, "/api/display-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_post(
                         state,
                         request,
@@ -369,7 +435,7 @@ where
                 )
             }
             (ApiMethod::Get, "/api/display-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_get(
                         request,
                         response_writer,
@@ -380,7 +446,7 @@ where
                 )
             }
             (ApiMethod::Post, "/api/test-key") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_post(
                         state,
                         request,
@@ -391,7 +457,7 @@ where
                 )
             }
             (ApiMethod::Post, "/api/fixed-key-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_post(
                         state,
                         request,
@@ -402,7 +468,7 @@ where
                 )
             }
             (ApiMethod::Post, "/api/ota-request") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_post(
                         state,
                         request,
@@ -413,7 +479,7 @@ where
                 )
             }
             (ApiMethod::Get, "/api/ota-config") => {
-                box_route_future!(
+                handled_route_future!(
                     handle_framework_get(
                         request,
                         response_writer,
@@ -423,10 +489,61 @@ where
                     .await
                 )
             }
-            _ => box_route_future!({
-                let nested_app = self.nested_app.shared().with_state(state);
-                nested_app.handle_request(request, response_writer).await
-            }),
+            _ => RouteAttempt::NotMatched {
+                path,
+                request,
+                response_writer,
+            },
+        }
+    }
+}
+
+impl<MoreState, NestedApp> PathRouterService<WebAppState<MoreState>>
+    for FrameworkWebService<MoreState, NestedApp>
+where
+    NestedApp: NestedAppWithWebAppState<MoreState>,
+{
+    async fn call_path_router_service<R: Read, W: ResponseWriter<Error = R::Error>>(
+        &self,
+        state: &WebAppState<MoreState>,
+        (): (),
+        path: Path<'_>,
+        request: Request<'_, R>,
+        response_writer: W,
+    ) -> Result<ResponseSent, W::Error> {
+        match self
+            .nested_app
+            .try_handle_route(state, path, request, response_writer)
+            .await
+        {
+            RouteAttempt::Handled(result) => result,
+            RouteAttempt::NotMatched {
+                path,
+                request,
+                response_writer,
+            } => match self
+                .try_handle_framework_route(state, path, request, response_writer)
+                .await
+            {
+                RouteAttempt::Handled(result) => result,
+                RouteAttempt::NotMatched {
+                    path,
+                    request,
+                    response_writer,
+                } => {
+                    box_route_future!(
+                        self.nested_app
+                            .handle_fallback(
+                                state,
+                                path,
+                                request,
+                                response_writer,
+                                &self.default_fallback,
+                            )
+                            .await
+                    )
+                }
+            },
         }
     }
 }
@@ -656,7 +773,7 @@ fn handle_framework_ota_config_get(
 }
 
 #[derive(Clone, Copy)]
-enum ApiMethod {
+pub enum ApiMethod {
     Get,
     Post,
     Other,
