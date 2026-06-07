@@ -173,6 +173,7 @@ pub struct Framework {
 
     config_processed_ok: Option<bool>,
     pub wifi_ok: Option<bool>,
+    pub web_config_mode: Option<WebConfigMode>,
     pub web_config_ip_url: String,
     pub web_config_name_url: String,
     pub web_config_key: String,
@@ -240,6 +241,7 @@ impl Framework {
             undim_display,
             config_processed_ok: None,
             wifi_ok: None,
+            web_config_mode: None,
             web_config_ip_url: String::new(),
             web_config_name_url: String::new(),
             web_config_key: String::new(),
@@ -529,7 +531,7 @@ impl Framework {
                 }
             };
             let web_config_name_url = web_config_name_url.as_deref();
-            self.wifi_ok = Some(true);
+            self.wifi_ok = Some(!captive);
             self.notify_webapp_url_update(&web_config_ip_url, web_config_name_url, ssid);
             self.web_config_ip_url = web_config_ip_url;
             self.web_config_name_url = web_config_name_url.unwrap_or("").to_string();
@@ -756,6 +758,7 @@ impl Framework {
             key_to_use = key;
         }
         self.web_config_key = key_to_use.to_string();
+        self.web_config_mode = Some(mode);
         self.encryption_key
             .replace(self.derive_encryption_key(key_to_use));
         self.web_server_commands

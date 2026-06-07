@@ -27,7 +27,10 @@ use picoserve::{
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use crate::{framework::Framework, ota::OtaRequest};
+use crate::{
+    framework::{Framework, WebConfigMode},
+    ota::OtaRequest,
+};
 
 #[derive(Clone, Copy)]
 pub struct Encryption(pub &'static RefCell<Vec<u8>>);
@@ -1067,24 +1070,32 @@ impl<MoreState> picoserve::routing::PathRouterService<WebAppState<MoreState>> fo
         W: picoserve::response::ResponseWriter<Error = R::Error>,
     >(
         &self,
-        _state: &WebAppState<MoreState>,
+        state: &WebAppState<MoreState>,
         _path_parameters: (),
         path: picoserve::request::Path<'_>,
         request: picoserve::request::Request<'_, R>,
         response_writer: W,
     ) -> Result<picoserve::ResponseSent, W::Error> {
-        debug!("Redirecting request from '{}' to: '/'", path);
-        if self.web_server_captive {
-            // TODO: Theoretically, this should be only when in AP mode
-            // TODO: probably best to handle only captive urls, for now everything. Could be confusing in case of not captive/AP
-            Redirect::to("/captive")
-                .write_to(request.body_connection.finalize().await?, response_writer)
-                .await
-        } else {
-            (StatusCode::NOT_FOUND, "")
-                .write_to(request.body_connection.finalize().await?, response_writer)
-                .await
-        }
+        let redirect_target = {
+            let framework = state.framework.0.borrow();
+            if matches!(framework.wifi_ok, Some(true)) {
+                "/"
+            } else if self.web_server_captive
+                && matches!(framework.web_config_mode, Some(WebConfigMode::AP))
+            {
+                "/captive"
+            } else {
+                "/config"
+            }
+        };
+
+        debug!(
+            "Redirecting request from '{}' to: '{}'",
+            path, redirect_target
+        );
+        Redirect::to(redirect_target)
+            .write_to(request.body_connection.finalize().await?, response_writer)
+            .await
     }
 }
 
