@@ -6,6 +6,7 @@ use alloc::{
     rc::Rc,
     string::{String, ToString},
     vec,
+    vec::Vec,
 };
 use embassy_futures::select::select;
 use embassy_net::Stack;
@@ -133,6 +134,7 @@ where
     web_server_commands: &'static WebServerCommands,
     tls: TlsReference<'static>,
     tls_credentials: Option<Credentials<'static>>,
+    http_buffer_pool: HttpBufferPool,
 }
 
 impl<GenericAppProps, GenericAppState> GenericRunner<GenericAppProps, GenericAppState>
@@ -162,6 +164,11 @@ where
             None
         };
 
+        let http_buffer_pool = HttpBufferPool::new(
+            web_server_config.buffer_sizes.http,
+            web_server_config.buffer_sizes.http_retained,
+        );
+
         let myself = Self {
             web_server_config,
             app_router,
@@ -170,6 +177,7 @@ where
             web_server_commands,
             tls: framework.borrow().tls,
             tls_credentials,
+            http_buffer_pool,
         };
 
         myself
@@ -185,8 +193,71 @@ where
             self.tls,
             self.tls_credentials.as_ref(),
             self.app_state,
+            self.http_buffer_pool.clone(),
         )
         .await;
+    }
+}
+
+#[derive(Clone)]
+struct HttpBufferPool {
+    buffers: Rc<RefCell<Vec<Box<[u8]>>>>,
+    buffer_size: usize,
+}
+
+impl HttpBufferPool {
+    fn new(buffer_size: usize, retained_buffers: usize) -> Self {
+        let mut buffers = Vec::new();
+        for _ in 0..retained_buffers {
+            buffers.push(vec![0u8; buffer_size].into_boxed_slice());
+        }
+
+        Self {
+            buffers: Rc::new(RefCell::new(buffers)),
+            buffer_size,
+        }
+    }
+
+    fn take(&self) -> HttpBufferLease {
+        if let Some(buffer) = self.buffers.borrow_mut().pop() {
+            HttpBufferLease::Pooled {
+                pool: self.buffers.clone(),
+                buffer: Some(buffer),
+            }
+        } else {
+            HttpBufferLease::Overflow {
+                buffer: vec![0u8; self.buffer_size].into_boxed_slice(),
+            }
+        }
+    }
+}
+
+enum HttpBufferLease {
+    Pooled {
+        pool: Rc<RefCell<Vec<Box<[u8]>>>>,
+        buffer: Option<Box<[u8]>>,
+    },
+    Overflow {
+        buffer: Box<[u8]>,
+    },
+}
+
+impl HttpBufferLease {
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        match self {
+            Self::Pooled { buffer, .. } => buffer.as_mut().unwrap().as_mut(),
+            Self::Overflow { buffer } => buffer.as_mut(),
+        }
+    }
+}
+
+impl Drop for HttpBufferLease {
+    fn drop(&mut self) {
+        if let Self::Pooled { pool, buffer } = self {
+            if let Some(buffer) = buffer.take() {
+                pool.borrow_mut().push(buffer);
+            }
+        }
     }
 }
 
@@ -211,6 +282,7 @@ pub struct WebServerBufferSizes {
     pub tcp_rx: usize,
     pub tcp_tx: usize,
     pub http: usize,
+    pub http_retained: usize,
 }
 
 impl Default for WebServerBufferSizes {
@@ -219,6 +291,7 @@ impl Default for WebServerBufferSizes {
             tcp_rx: 2048,
             tcp_tx: 2048,
             http: 16 * 1024,
+            http_retained: 1,
         }
     }
 }
@@ -237,6 +310,7 @@ async fn web_task<GenericAppProps, GenericAppState>(
     tls: TlsReference<'static>,
     tls_credentials: Option<&Credentials<'static>>,
     state: &'static GenericAppState,
+    http_buffer_pool: HttpBufferPool,
 ) where
     GenericAppProps: AppWithStateBuilder<State = GenericAppState> + 'static,
     GenericAppState: 'static,
@@ -267,6 +341,7 @@ async fn web_task<GenericAppProps, GenericAppState>(
                         tls,
                         tls_credentials,
                         state,
+                        http_buffer_pool.clone(),
                     ),
                     web_server_commands.next_message_pure(),
                 )
@@ -372,12 +447,12 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
     tls: TlsReference<'static>,
     tls_credentials: Option<&Credentials<'static>>,
     state: &GenericAppState,
+    http_buffer_pool: HttpBufferPool,
 ) -> ! {
     let port = web_server_config.port;
     let buffer_sizes = web_server_config.buffer_sizes;
     let mut tcp_rx_buffer = vec![0u8; buffer_sizes.tcp_rx].into_boxed_slice();
     let mut tcp_tx_buffer = vec![0u8; buffer_sizes.tcp_tx].into_boxed_slice();
-    let mut http_buffer = vec![0u8; buffer_sizes.http].into_boxed_slice();
 
     loop {
         let mut socket =
@@ -393,13 +468,15 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
             continue;
         }
 
+        let mut http_buffer = http_buffer_pool.take();
+
         if web_server_config.tls {
             let serve = Box::pin(serve_tls_connection(
                 web_server_config.web_app_name,
                 &task_id,
                 app,
                 config,
-                &mut *http_buffer,
+                http_buffer.as_mut_slice(),
                 socket,
                 tls,
                 tls_credentials.unwrap(),
@@ -419,7 +496,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
                 &task_id,
                 app,
                 config,
-                &mut *http_buffer,
+                http_buffer.as_mut_slice(),
                 socket,
                 state,
             ));
