@@ -243,8 +243,12 @@ pub struct CustomNotFound {
     pub web_server_captive: bool,
 }
 
+pub const LOG_WEB_MEASUREMENTS: bool = false;
+
 pub fn log_boxed_route_future_state(size: usize) {
-    info!("boxed route future state={} bytes", size);
+    if LOG_WEB_MEASUREMENTS {
+        info!("boxed route future state={} bytes", size);
+    }
 }
 
 #[macro_export]
@@ -516,7 +520,11 @@ where
         request: Request<'_, R>,
         response_writer: W,
     ) -> Result<ResponseSent, W::Error> {
-        match self
+        let method_log = request.parts.method().to_string();
+        let path_log = path.encoded().to_string();
+        debug!("Web-App request started: {method_log} {path_log}");
+
+        let result = match self
             .nested_app
             .try_handle_route(state, path, request, response_writer)
             .await
@@ -549,7 +557,13 @@ where
                     )
                 }
             },
-        }
+        };
+
+        debug!(
+            "Web-App request completed: {method_log} {path_log} {}",
+            if result.is_ok() { "ok" } else { "error" }
+        );
+        result
     }
 }
 

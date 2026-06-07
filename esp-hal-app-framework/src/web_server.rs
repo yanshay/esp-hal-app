@@ -24,7 +24,9 @@ use esp_mbedtls::{
 
 use super::{
     framework::{Framework, WebServerCommands, WebServerSubscriber},
-    framework_web_app::{NestedAppWithWebAppStateBuilder, WebAppBuilder, WebAppState},
+    framework_web_app::{
+        NestedAppWithWebAppStateBuilder, WebAppBuilder, WebAppState, LOG_WEB_MEASUREMENTS,
+    },
 };
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -51,7 +53,7 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
         buffer_sizes: WebServerBufferSizes,
     ) -> Self {
         let web_server_config = WebServerConfig {
-            web_app_name: "Web-Config",
+            web_app_name: "Web-App",
             port: framework.borrow().settings.web_server_port,
             tls: framework.borrow().settings.web_server_https,
             tls_certificate: framework.borrow().settings.web_server_tls_certificate,
@@ -239,6 +241,10 @@ async fn web_task<GenericAppProps, GenericAppState>(
     GenericAppProps: AppWithStateBuilder<State = GenericAppState> + 'static,
     GenericAppState: 'static,
 {
+    debug!(
+        "[{task_id}] {} web task started",
+        web_server_config.web_app_name
+    );
     let mut command = None;
 
     loop {
@@ -323,7 +329,7 @@ async fn standalone_captive_redirect_listen_and_serve(
         embassy_net::tcp::TcpSocket::new(stack, &mut *tcp_rx_buffer, &mut *tcp_tx_buffer);
 
     loop {
-        info!("Captive: listening on TCP:{}...", port);
+        debug!("Captive: listening on TCP:{}...", port);
 
         if let Err(err) = socket.accept(port).await {
             warn!("Captive: accept error: {:?}", err);
@@ -377,9 +383,9 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
         let mut socket =
             embassy_net::tcp::TcpSocket::new(stack, &mut *tcp_rx_buffer, &mut *tcp_tx_buffer);
 
-        info!(
-            "[{task_id}] {} Web Application: Listening on TCP port:{}...",
-            web_server_config.web_app_name, port
+        debug!(
+            "[{task_id}] {}: listening TCP:{port}",
+            web_server_config.web_app_name
         );
 
         if let Err(err) = socket.accept(port).await {
@@ -399,11 +405,13 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
                 tls_credentials.unwrap(),
                 state,
             ));
-            info!(
-                "[{task_id}] {} HTTPS boxed serve future state={} bytes",
-                web_server_config.web_app_name,
-                core::mem::size_of_val(serve.as_ref().get_ref())
-            );
+            if LOG_WEB_MEASUREMENTS {
+                info!(
+                    "[{task_id}] {} HTTPS boxed serve future state={} bytes",
+                    web_server_config.web_app_name,
+                    core::mem::size_of_val(serve.as_ref().get_ref())
+                );
+            }
             serve.await;
         } else {
             let serve = Box::pin(serve_http_connection(
@@ -415,11 +423,13 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
                 socket,
                 state,
             ));
-            info!(
-                "[{task_id}] {} HTTP boxed serve future state={} bytes",
-                web_server_config.web_app_name,
-                core::mem::size_of_val(serve.as_ref().get_ref())
-            );
+            if LOG_WEB_MEASUREMENTS {
+                info!(
+                    "[{task_id}] {} HTTP boxed serve future state={} bytes",
+                    web_server_config.web_app_name,
+                    core::mem::size_of_val(serve.as_ref().get_ref())
+                );
+            }
             serve.await;
         }
     }
@@ -438,23 +448,15 @@ async fn serve_http_connection<P: routing::PathRouter<GenericAppState>, GenericA
     socket.set_keep_alive(Some(Duration::from_secs(30)));
     socket.set_timeout(Some(Duration::from_secs(45)));
 
-    let remote_endpoint = socket.remote_endpoint();
-    info!(
-        "[{task_id}] {web_app_name} Web Application: Accepted connection from {remote_endpoint:?}"
-    );
-    debug!("[{task_id}] Serving HTTP request");
+    let remote_endpoint = format_remote_endpoint(&socket);
+    debug!("[{task_id}] {web_app_name}: accepted {remote_endpoint}");
 
     let app_with_state = app.shared().with_state(state);
     match picoserve::Server::new(&app_with_state, config, http_buffer)
         .serve(socket)
         .await
     {
-        Ok(disconnection_info) => {
-            info!(
-                "[{task_id}] {} requests handled from {:?}",
-                disconnection_info.handled_requests_count, remote_endpoint
-            );
-        }
+        Ok(_) => {}
         Err(err) => match err {
             picoserve::Error::ReadTimeout(_) => (),
             _ => {
@@ -479,11 +481,8 @@ async fn serve_tls_connection<P: routing::PathRouter<GenericAppState>, GenericAp
     socket.set_keep_alive(Some(Duration::from_secs(30)));
     socket.set_timeout(Some(Duration::from_secs(45)));
 
-    let remote_endpoint = socket.remote_endpoint();
-    info!(
-        "[{task_id}] {web_app_name} Web Application: Accepted connection from {remote_endpoint:?}"
-    );
-    debug!("[{task_id}] Serving HTTPS request");
+    let remote_endpoint = format_remote_endpoint(&socket);
+    debug!("[{task_id}] {web_app_name}: accepted {remote_endpoint}");
 
     let tls_config = ServerSessionConfig::new(tls_credentials.clone());
     let session = Session::new(tls, socket, &SessionConfig::Server(tls_config)).unwrap();
@@ -494,13 +493,24 @@ async fn serve_tls_connection<P: routing::PathRouter<GenericAppState>, GenericAp
         .serve(wrapper)
         .await
     {
-        Ok(disconnection_info) => {
-            info!(
-                "[{task_id}] {} requests handled from {:?}",
-                disconnection_info.handled_requests_count, remote_endpoint
-            );
-        }
+        Ok(_) => {}
         Err(err) => error!("[{task_id}] Error handling request: {:?}", &err),
+    }
+}
+
+fn format_remote_endpoint(socket: &TcpSocket<'_>) -> String {
+    match socket.remote_endpoint() {
+        Some(endpoint) => match endpoint.addr {
+            embassy_net::IpAddress::Ipv4(addr) => {
+                let octets = addr.octets();
+                format!(
+                    "{}.{}.{}.{}:{}",
+                    octets[0], octets[1], octets[2], octets[3], endpoint.port
+                )
+            }
+            embassy_net::IpAddress::Ipv6(addr) => format!("{:?}:{}", addr, endpoint.port),
+        },
+        None => "unknown".to_string(),
     }
 }
 
@@ -554,7 +564,7 @@ impl<'s> SessionWrapper<'s> {
         timeouts: &picoserve::Timeouts,
         timer: &mut Timer,
     ) -> Result<(), picoserve::Error<TlsSocketError>> {
-        info!("TLS TCP abort started");
+        debug!("TLS TCP abort started");
         let mut session = self.session.lock().await;
         session.stream().abort();
         timer
@@ -562,7 +572,7 @@ impl<'s> SessionWrapper<'s> {
             .await
             .map_err(picoserve::Error::WriteTimeout)?
             .map_err(|error| picoserve::Error::Write(TlsSocketError::Tcp(error)))?;
-        info!("TLS TCP abort completed");
+        debug!("TLS TCP abort completed");
         Ok(())
     }
 }
@@ -640,15 +650,11 @@ impl<'s> picoserve::io::Socket<picoserve::EmbassyRuntime> for SessionWrapper<'s>
         timeouts: &picoserve::Timeouts,
         timer: &mut Timer,
     ) -> Result<(), picoserve::Error<Self::Error>> {
-        info!("TLS shutdown started");
         match timer
             .run_with_timeout(timeouts.write, self.graceful_close())
             .await
         {
-            Ok(Ok(())) => {
-                info!("TLS shutdown completed gracefully");
-                Ok(())
-            }
+            Ok(Ok(())) => Ok(()),
             Ok(Err(error)) => {
                 warn!("TLS shutdown failed, aborting TCP: {:?}", error);
                 self.abort_tcp(timeouts, timer).await
