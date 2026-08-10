@@ -9,6 +9,7 @@ use alloc::{format, rc::Rc};
 use alloc::{string::String, vec};
 use edge_dhcp::io::{self, DEFAULT_SERVER_PORT};
 use edge_nal::UdpBind;
+use embassy_futures::select::{select, Either};
 use embassy_net::{Runner, Stack};
 use embassy_time::with_timeout;
 use embassy_time::{Duration, Timer};
@@ -390,6 +391,7 @@ pub async fn connection_task_inner(
                     framework.borrow_mut().report_wifi(None, false, &ssid);
                     framework.borrow().notify_wifi_sta_disconnected();
                 }
+                is_connected = false;
                 term_error!("WiFi disconnected, trying to reconnect");
                 // loop {
                 // trace!("Scanning");
@@ -428,82 +430,165 @@ pub async fn connection_task_inner(
             Ok(_) => {
                 term_info!("Connected to WiFi");
 
-                loop {
+                // Association succeeded; still watch for disconnect before the link is usable.
+                let disconnected_before_link = loop {
                     info!("Waiting for link to be up");
                     if sta_stack.is_link_up() {
-                        break;
+                        break false;
                     }
-                    Timer::after(Duration::from_millis(500)).await;
+                    match select(
+                        Timer::after(Duration::from_millis(500)),
+                        controller.wait_for_events(
+                            esp_radio::wifi::WifiEvent::StaDisconnected.into(),
+                            false,
+                        ),
+                    )
+                    .await
+                    {
+                        Either::First(_) => {}
+                        Either::Second(_) => break true,
+                    }
+                };
+
+                if disconnected_before_link {
+                    if is_connected && !first_connect {
+                        framework.borrow_mut().report_wifi(None, false, &ssid);
+                        framework.borrow().notify_wifi_sta_disconnected();
+                    }
+                    is_connected = false;
+                    term_error!("WiFi disconnected before link was up, trying to reconnect");
+                    Timer::after(Duration::from_millis(1000)).await;
+                    continue;
                 }
                 term_info!("Waiting for an IP");
 
-                let mut wait_counter = 24;
-                const SKIP_CHECKS: i32 = 0;
+                let mut retried_dhcp = false;
                 loop {
-                    if let Some(config) = sta_stack.config_v4() {
-                        term_info!("Received IP: {}", config.address);
-                        framework.borrow_mut().report_wifi(
-                            Some(config.address.address()),
-                            false,
-                            &ssid,
-                        );
-                        if improv_wifi_bootstrap {
-                            // ignore warning, it's wrong, there's a drop below
-                            let res = framework
-                                .borrow_mut()
-                                .set_wifi_credentials(&ssid, &password); // need to be on separate line (due to borrowing)
-                            match res {
-                                Ok(_) => {
-                                    #[cfg(any(
-                                        feature = "improv-jtag-serial",
-                                        feature = "improv-uart"
-                                    ))]
-                                    {
-                                        let response = ImprovWifiPacket::new_current_state(
-                                            CurrentStateOption::Provisioned,
-                                        );
-                                        send_packet(response, true).await;
+                    // Wait for DHCP, but stop immediately if WiFi drops meanwhile.
+                    let ip_wait_result = with_timeout(Duration::from_secs(30), async {
+                        let mut wait_counter = 24;
+                        const SKIP_CHECKS: i32 = 0;
+                        loop {
+                            if let Some(config) = sta_stack.config_v4() {
+                                break Ok(config);
+                            } else {
+                                if wait_counter >= SKIP_CHECKS {
+                                    if (wait_counter - SKIP_CHECKS) % 90 == 0 {
+                                        term_info!("");
                                     }
-
-                                    framework
-                                        .borrow_mut()
-                                        .start_web_app(sta_stack, WebConfigMode::STA);
-
-                                    #[cfg(any(
-                                        feature = "improv-jtag-serial",
-                                        feature = "improv-uart"
-                                    ))]
-                                    {
-                                        let response = ImprovWifiPacket::new_rpc_result(
-                                            RPCResultStruct::new_response_to_send_wifi_settings(
-                                                &format!("{prefix}://{}", config.address.address()),
-                                            ),
-                                        );
-                                        term_info!("Stored credentials in flash");
-                                        send_packet(response, true).await;
-                                    }
+                                    term_info_same_line!(".");
                                 }
-                                Err(e) => {
-                                    term_error!(format!("Error storing credentials in flash, WiFi initialization halted {e:?}"));
-                                    return;
-                                }
+                                wait_counter += 1;
+                            }
+                            match select(
+                                Timer::after(Duration::from_millis(250)),
+                                controller.wait_for_events(
+                                    esp_radio::wifi::WifiEvent::StaDisconnected.into(),
+                                    false,
+                                ),
+                            )
+                            .await
+                            {
+                                Either::First(_) => info!("Still waiting for an IP address"),
+                                Either::Second(_) => break Err(()),
                             }
                         }
-                        framework.borrow().notify_wifi_sta_connected();
-                        first_connect = false;
-                        is_connected = true;
-                        break;
-                    } else {
-                        if wait_counter >= SKIP_CHECKS {
-                            if (wait_counter - SKIP_CHECKS) % 90 == 0 {
-                                term_info!("");
+                    })
+                    .await;
+
+                    match ip_wait_result {
+                        Ok(Ok(config)) => {
+                            term_info!("Received IP: {}", config.address);
+                            framework.borrow_mut().report_wifi(
+                                Some(config.address.address()),
+                                false,
+                                &ssid,
+                            );
+                            if improv_wifi_bootstrap {
+                                // ignore warning, it's wrong, there's a drop below
+                                let res = framework
+                                    .borrow_mut()
+                                    .set_wifi_credentials(&ssid, &password); // need to be on separate line (due to borrowing)
+                                match res {
+                                    Ok(_) => {
+                                        #[cfg(any(
+                                            feature = "improv-jtag-serial",
+                                            feature = "improv-uart"
+                                        ))]
+                                        {
+                                            let response = ImprovWifiPacket::new_current_state(
+                                                CurrentStateOption::Provisioned,
+                                            );
+                                            send_packet(response, true).await;
+                                        }
+
+                                        framework
+                                            .borrow_mut()
+                                            .start_web_app(sta_stack, WebConfigMode::STA);
+
+                                        #[cfg(any(
+                                            feature = "improv-jtag-serial",
+                                            feature = "improv-uart"
+                                        ))]
+                                        {
+                                            let response = ImprovWifiPacket::new_rpc_result(
+                                                RPCResultStruct::new_response_to_send_wifi_settings(
+                                                    &format!(
+                                                        "{prefix}://{}",
+                                                        config.address.address()
+                                                    ),
+                                                ),
+                                            );
+                                            term_info!("Stored credentials in flash");
+                                            send_packet(response, true).await;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        term_error!(format!("Error storing credentials in flash, WiFi initialization halted {e:?}"));
+                                        return;
+                                    }
+                                }
                             }
-                            term_info_same_line!(".");
+                            framework.borrow().notify_wifi_sta_connected();
+                            first_connect = false;
+                            is_connected = true;
+                            break;
                         }
-                        wait_counter += 1;
+                        Ok(Err(())) => {
+                            if is_connected && !first_connect {
+                                framework.borrow_mut().report_wifi(None, false, &ssid);
+                                framework.borrow().notify_wifi_sta_disconnected();
+                            }
+                            is_connected = false;
+                            term_error!(
+                                "WiFi disconnected before receiving an IP, trying to reconnect"
+                            );
+                            Timer::after(Duration::from_millis(1000)).await;
+                            break;
+                        }
+                        Err(_) if !retried_dhcp => {
+                            // WiFi is still connected; restart DHCP once before reconnecting WiFi.
+                            retried_dhcp = true;
+                            term_error!("Timed out waiting for an IP address, retrying DHCP");
+                            sta_stack
+                                .set_config_v4(embassy_net::ConfigV4::Dhcp(Default::default()));
+                            term_info!("Waiting for an IP");
+                        }
+                        Err(_) => {
+                            // DHCP retry also failed; force a fresh WiFi connection cycle.
+                            if is_connected && !first_connect {
+                                framework.borrow_mut().report_wifi(None, false, &ssid);
+                                framework.borrow().notify_wifi_sta_disconnected();
+                            }
+                            is_connected = false;
+                            term_error!(
+                                "Timed out waiting for an IP address after DHCP retry, trying to reconnect"
+                            );
+                            let _ = controller.disconnect_async().await;
+                            Timer::after(Duration::from_millis(1000)).await;
+                            break;
+                        }
                     }
-                    Timer::after(Duration::from_millis(250)).await;
-                    info!("Still waiting for an IP address");
                 }
             }
             Err(e) => {
