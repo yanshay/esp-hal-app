@@ -383,20 +383,27 @@ pub async fn connection_task_inner(
         match esp_radio::wifi::sta_state() {
             esp_radio::wifi::WifiStaState::Connected => {
                 // wait until we're no longer connected
-                // controller.wait_for_event(esp_wifi::wifi::WifiEvent::StaDisconnected).await;
-                loop {
-                    // trace!("Scanning");
-                    // let cfg = esp_wifi::wifi::ScanConfig{
-                    //     ssid:Some("DEV"),
-                    //     bssid: None,
-                    //     channel: None,
-                    //     show_hidden: false,
-                    //     scan_type: esp_wifi::wifi::ScanTypeConfig::Passive(core::time::Duration::from_secs(5))
-                    // };
-                    // let res = controller.scan_with_config::<1>(cfg).await;
-                    // dbg!(res);
-                    Timer::after(Duration::from_millis(1000)).await // why wait (in original example)
+                controller
+                    .wait_for_events(esp_radio::wifi::WifiEvent::StaDisconnected.into(), false)
+                    .await;
+                if is_connected && !first_connect {
+                    framework.borrow_mut().report_wifi(None, false, &ssid);
+                    framework.borrow().notify_wifi_sta_disconnected();
                 }
+                term_error!("WiFi disconnected, trying to reconnect");
+                // loop {
+                // trace!("Scanning");
+                // let cfg = esp_wifi::wifi::ScanConfig{
+                //     ssid:Some("DEV"),
+                //     bssid: None,
+                //     channel: None,
+                //     show_hidden: false,
+                //     scan_type: esp_wifi::wifi::ScanTypeConfig::Passive(core::time::Duration::from_secs(5))
+                // };
+                // let res = controller.scan_with_config::<1>(cfg).await;
+                // dbg!(res);
+                Timer::after(Duration::from_millis(1000)).await // why wait (in original example)
+                                                                // }
             }
             _ => {
                 // if !first_connect {
@@ -500,10 +507,6 @@ pub async fn connection_task_inner(
                 }
             }
             Err(e) => {
-                if is_connected && !first_connect {
-                    framework.borrow_mut().report_wifi(None, false, &ssid);
-                    framework.borrow().notify_wifi_sta_disconnected();
-                }
                 is_connected = false;
                 term_error!("Error while trying to connect to wifi: {:?}", e);
                 Timer::after(Duration::from_millis(1000)).await
