@@ -22,8 +22,12 @@ use esp_radio::wifi::{
 
 use crate::utils::SpawnerHeapExt;
 
-use super::framework::{Framework, WebConfigMode};
+use super::framework::{Framework, WebConfigMode, WifiSignalState, WifiSignalStrength};
 use super::improv_wifi::*;
+
+const WIFI_SIGNAL_SAMPLE_INTERVAL_MS: u64 = 250;
+const WIFI_SIGNAL_SAMPLES_PER_REPORT: usize = 8;
+const WIFI_SIGNAL_MIN_SAMPLES_PER_REPORT: usize = 3;
 
 #[embassy_executor::task]
 #[allow(clippy::too_many_arguments)]
@@ -145,6 +149,9 @@ pub async fn connection_task_inner(
             true,
             app_cargo_pkg_name,
         );
+        framework
+            .borrow_mut()
+            .report_wifi_signal(WifiSignalState::Disconnected);
 
         term_info!("WiFi Credentions not Configured.");
         term_info!("Provide WiFi credentials using either:");
@@ -372,6 +379,9 @@ pub async fn connection_task_inner(
 
     term_info!("About to connect to WiFi SSID '{}'", ssid);
     // trace!("About to connect Wifi using '{}', '{}'", password, ssid);
+    framework
+        .borrow_mut()
+        .report_wifi_signal(WifiSignalState::Disconnected);
 
     let mut first_connect = true;
     let mut is_connected = false;
@@ -384,11 +394,12 @@ pub async fn connection_task_inner(
         match esp_radio::wifi::sta_state() {
             esp_radio::wifi::WifiStaState::Connected => {
                 // wait until we're no longer connected
-                controller
-                    .wait_for_events(esp_radio::wifi::WifiEvent::StaDisconnected.into(), false)
-                    .await;
+                monitor_wifi_signal_until_disconnect(&mut controller, framework.clone()).await;
                 if is_connected && !first_connect {
                     framework.borrow_mut().report_wifi(None, false, &ssid);
+                    framework
+                        .borrow_mut()
+                        .report_wifi_signal(WifiSignalState::Disconnected);
                     framework.borrow().notify_wifi_sta_disconnected();
                 }
                 is_connected = false;
@@ -453,9 +464,15 @@ pub async fn connection_task_inner(
                 if disconnected_before_link {
                     if is_connected && !first_connect {
                         framework.borrow_mut().report_wifi(None, false, &ssid);
+                        framework
+                            .borrow_mut()
+                            .report_wifi_signal(WifiSignalState::Disconnected);
                         framework.borrow().notify_wifi_sta_disconnected();
                     }
                     is_connected = false;
+                    framework
+                        .borrow_mut()
+                        .report_wifi_signal(WifiSignalState::Disconnected);
                     term_error!("WiFi disconnected before link was up, trying to reconnect");
                     Timer::after(Duration::from_millis(1000)).await;
                     continue;
@@ -550,6 +567,9 @@ pub async fn connection_task_inner(
                                 }
                             }
                             framework.borrow().notify_wifi_sta_connected();
+                            framework
+                                .borrow_mut()
+                                .report_wifi_signal(WifiSignalState::ConnectedNoSignal);
                             first_connect = false;
                             is_connected = true;
                             break;
@@ -557,9 +577,15 @@ pub async fn connection_task_inner(
                         Ok(Err(())) => {
                             if is_connected && !first_connect {
                                 framework.borrow_mut().report_wifi(None, false, &ssid);
+                                framework
+                                    .borrow_mut()
+                                    .report_wifi_signal(WifiSignalState::Disconnected);
                                 framework.borrow().notify_wifi_sta_disconnected();
                             }
                             is_connected = false;
+                            framework
+                                .borrow_mut()
+                                .report_wifi_signal(WifiSignalState::Disconnected);
                             term_error!(
                                 "WiFi disconnected before receiving an IP, trying to reconnect"
                             );
@@ -578,9 +604,15 @@ pub async fn connection_task_inner(
                             // DHCP retry also failed; force a fresh WiFi connection cycle.
                             if is_connected && !first_connect {
                                 framework.borrow_mut().report_wifi(None, false, &ssid);
+                                framework
+                                    .borrow_mut()
+                                    .report_wifi_signal(WifiSignalState::Disconnected);
                                 framework.borrow().notify_wifi_sta_disconnected();
                             }
                             is_connected = false;
+                            framework
+                                .borrow_mut()
+                                .report_wifi_signal(WifiSignalState::Disconnected);
                             term_error!(
                                 "Timed out waiting for an IP address after DHCP retry, trying to reconnect"
                             );
@@ -593,10 +625,73 @@ pub async fn connection_task_inner(
             }
             Err(e) => {
                 is_connected = false;
+                framework
+                    .borrow_mut()
+                    .report_wifi_signal(WifiSignalState::Disconnected);
                 term_error!("Error while trying to connect to wifi: {:?}", e);
                 Timer::after(Duration::from_millis(1000)).await
             }
         }
+    }
+}
+
+async fn monitor_wifi_signal_until_disconnect(
+    controller: &mut esp_radio::wifi::WifiController<'static>,
+    framework: Rc<RefCell<Framework>>,
+) {
+    framework
+        .borrow_mut()
+        .report_wifi_signal(WifiSignalState::ConnectedNoSignal);
+
+    loop {
+        let mut samples = [0i32; WIFI_SIGNAL_SAMPLES_PER_REPORT];
+        let mut sample_count = 0usize;
+
+        for _ in 0..WIFI_SIGNAL_SAMPLES_PER_REPORT {
+            match select(
+                Timer::after(Duration::from_millis(WIFI_SIGNAL_SAMPLE_INTERVAL_MS)),
+                controller
+                    .wait_for_events(esp_radio::wifi::WifiEvent::StaDisconnected.into(), false),
+            )
+            .await
+            {
+                Either::First(_) => match controller.rssi() {
+                    Ok(rssi) => {
+                        samples[sample_count] = rssi;
+                        sample_count += 1;
+                    }
+                    Err(e) => debug!("Failed to read WiFi RSSI: {:?}", e),
+                },
+                Either::Second(_) => return,
+            }
+        }
+
+        let signal = if sample_count >= WIFI_SIGNAL_MIN_SAMPLES_PER_REPORT {
+            let rssi_dbm = average_rssi_dbm(&samples[..sample_count]);
+            WifiSignalState::Connected(WifiSignalStrength::from_rssi_dbm(rssi_dbm))
+        } else {
+            WifiSignalState::ConnectedNoSignal
+        };
+
+        framework.borrow_mut().report_wifi_signal(signal);
+    }
+}
+
+fn average_rssi_dbm(samples: &[i32]) -> i32 {
+    let mut sum = 0;
+
+    for sample in samples {
+        sum += *sample;
+    }
+
+    rounded_divide(sum, samples.len() as i32)
+}
+
+fn rounded_divide(value: i32, divisor: i32) -> i32 {
+    if value >= 0 {
+        (value + divisor / 2) / divisor
+    } else {
+        (value - divisor / 2) / divisor
     }
 }
 

@@ -95,6 +95,39 @@ pub enum OtaState {
     Completed(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum WifiSignalState {
+    Unknown,
+    Disconnected,
+    ConnectedNoSignal,
+    Connected(WifiSignalStrength),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct WifiSignalStrength {
+    pub rssi_dbm: i32,
+    pub bars: u8,
+}
+
+impl WifiSignalStrength {
+    pub fn from_rssi_dbm(rssi_dbm: i32) -> Self {
+        Self {
+            rssi_dbm,
+            bars: wifi_signal_bars_from_rssi_dbm(rssi_dbm),
+        }
+    }
+}
+
+pub fn wifi_signal_bars_from_rssi_dbm(rssi_dbm: i32) -> u8 {
+    match rssi_dbm {
+        -55..=i32::MAX => 4,
+        -67..=-56 => 3,
+        -75..=-68 => 2,
+        -82..=-76 => 1,
+        _ => 0,
+    }
+}
+
 impl fmt::Display for OtaState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -173,6 +206,7 @@ pub struct Framework {
 
     config_processed_ok: Option<bool>,
     pub wifi_ok: Option<bool>,
+    pub wifi_signal: WifiSignalState,
     pub web_config_mode: Option<WebConfigMode>,
     pub web_config_ip_url: String,
     pub web_config_name_url: String,
@@ -241,6 +275,7 @@ impl Framework {
             undim_display,
             config_processed_ok: None,
             wifi_ok: None,
+            wifi_signal: WifiSignalState::Unknown,
             web_config_mode: None,
             web_config_ip_url: String::new(),
             web_config_name_url: String::new(),
@@ -540,6 +575,18 @@ impl Framework {
             self.notify_webapp_url_update("N/A - WiFi not connected", None, ssid);
         }
         // self.check_status_so_far();
+    }
+
+    pub fn wifi_signal(&self) -> WifiSignalState {
+        self.wifi_signal
+    }
+
+    pub(crate) fn report_wifi_signal(&mut self, signal: WifiSignalState) {
+        if self.wifi_signal != signal {
+            self.wifi_signal = signal;
+            // info!("WiFi signal changed: {:?}", signal);
+            self.notify_wifi_signal_changed(signal);
+        }
     }
 
     // not on self, since async across borrow on framework would most probably panic
@@ -887,6 +934,12 @@ impl Framework {
             observer.borrow_mut().on_wifi_sta_disconnected();
         }
     }
+    pub fn notify_wifi_signal_changed(&self, signal: WifiSignalState) {
+        for weak_observer in self.observers.iter() {
+            let observer = weak_observer.upgrade().unwrap();
+            observer.borrow_mut().on_wifi_signal_changed(signal);
+        }
+    }
     pub fn notify_initialization_completed(&self, status: bool) {
         debug!(
             "Notified on Initialization Completed {}",
@@ -919,6 +972,7 @@ pub trait FrameworkObserver {
     fn on_web_config_stopped(&self);
     fn on_wifi_sta_connected(&self);
     fn on_wifi_sta_disconnected(&self);
+    fn on_wifi_signal_changed(&mut self, _signal: WifiSignalState) {}
 }
 
 #[embassy_executor::task]
