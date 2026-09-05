@@ -84,6 +84,7 @@ pub struct DisplayConfig {
     pub dimming_timeout: Option<u64>,
     pub dimming_percent: Option<u8>,
     pub blackout_timeout: Option<u64>,
+    pub flip: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -163,6 +164,7 @@ pub struct Framework {
     pub display_dimming_timeout: u64,
     pub display_dimming_percent: u8,
     pub display_blackout_timeout: u64,
+    pub display_flip: bool,
     pub undim_display:
         &'static embassy_sync::signal::Signal<embassy_sync::blocking_mutex::raw::NoopRawMutex, ()>,
 
@@ -234,6 +236,7 @@ impl Framework {
             display_dimming_timeout: 60 * 2,
             display_dimming_percent: 10,
             display_blackout_timeout: 60 * 5,
+            display_flip: false,
             spawner,
             stack,
             tls,
@@ -264,6 +267,23 @@ impl Framework {
 
         framework.borrow_mut().framework = Some(framework.clone());
         framework
+    }
+
+    fn fetch_display_config(&self) -> Option<DisplayConfig> {
+        self.fetch(String::from(DISPLAY_CONFIG_KEY))
+            .ok()
+            .flatten()
+            .and_then(|display_store| serde_json::from_str::<DisplayConfig>(&display_store).ok())
+    }
+
+    /// The display is brought up before `load_config_flash_then_toml` runs, so the flip has to be
+    /// read straight off flash at boot. Applied only on init - changing it requires a restart.
+    pub fn display_flip_from_flash(&mut self) -> bool {
+        self.display_flip = self
+            .fetch_display_config()
+            .and_then(|display_config| display_config.flip)
+            .unwrap_or(self.display_flip);
+        self.display_flip
     }
 
     pub fn load_config_flash_then_toml(&mut self, toml_str: &str) -> Result<(), String> {
@@ -301,12 +321,7 @@ impl Framework {
             }
         }
 
-        if let Ok(Some(display_store)) = block_on(
-            self.flash_map
-                .borrow_mut()
-                .fetch(String::from(DISPLAY_CONFIG_KEY)),
-        ) {
-            if let Ok(display_config) = serde_json::from_str::<DisplayConfig>(&display_store) {
+        if let Some(display_config) = self.fetch_display_config() {
                 self.display_dimming_timeout = display_config
                     .dimming_timeout
                     .unwrap_or(self.display_dimming_timeout);
@@ -316,7 +331,7 @@ impl Framework {
                 self.display_blackout_timeout = display_config
                     .blackout_timeout
                     .unwrap_or(self.display_blackout_timeout);
-            }
+            self.display_flip = display_config.flip.unwrap_or(self.display_flip);
         }
 
         let mut section = String::from("");
@@ -802,15 +817,17 @@ impl Framework {
         dimming_timeout: u64,
         dimming_percent: u8,
         blackout_timeout: u64,
+        flip: bool,
     ) -> Result<(), sequential_storage::Error<esp_storage::FlashStorageError>> {
         self.display_dimming_timeout = dimming_timeout;
         self.display_dimming_percent = dimming_percent;
         self.display_blackout_timeout = blackout_timeout;
-
+        self.display_flip = flip;
         let display_config = DisplayConfig {
             dimming_timeout: Some(dimming_timeout),
             dimming_percent: Some(dimming_percent),
             blackout_timeout: Some(blackout_timeout),
+            flip: Some(flip),
         };
 
         let display_store = serde_json::to_string(&display_config).unwrap();

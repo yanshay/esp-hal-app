@@ -149,12 +149,14 @@ pub(super) fn handle_framework_display_config_post(
         dimming_timeout,
         dimming_percent,
         blackout_timeout,
+        flip,
     }: DisplayConfigDTO,
 ) -> String {
     match framework.borrow_mut().set_display_settings(
         dimming_timeout,
         dimming_percent,
         blackout_timeout,
+        flip,
     ) {
         Ok(_) => SetConfigResponseDTO { error_text: None }.encrypt(&key.borrow()),
         Err(e) => SetConfigResponseDTO {
@@ -173,6 +175,7 @@ pub(super) fn handle_framework_display_config_get(
         dimming_timeout: framework.display_dimming_timeout,
         dimming_percent: framework.display_dimming_percent,
         blackout_timeout: framework.display_blackout_timeout,
+        flip: framework.display_flip,
     }
     .encrypt(&key.borrow())
 }
@@ -512,6 +515,8 @@ pub(super) struct DisplayConfigDTO {
     dimming_timeout: u64,
     dimming_percent: u8,
     blackout_timeout: u64,
+    #[serde(default)]
+    flip: bool,
 }
 crate::encrypted_input!(DisplayConfigDTO);
 
