@@ -60,6 +60,7 @@ impl<MoreState, NestedMainAppBuilder: NestedAppWithWebAppStateBuilder<MoreState>
             tls_certificate: framework.borrow().settings.web_server_tls_certificate,
             tls_private_key: framework.borrow().settings.web_server_tls_private_key,
             buffer_sizes,
+            accept_timeout: framework.borrow().settings.web_server_accept_timeout,
         };
         let generic_runner = GenericRunner::<
             WebAppBuilder<MoreState, NestedMainAppBuilder>,
@@ -275,6 +276,10 @@ pub struct WebServerConfig {
     pub tls_certificate: &'static str,
     pub tls_private_key: &'static str,
     pub buffer_sizes: WebServerBufferSizes,
+    /// TCP timeout applied while waiting in accept(). Without one, a half-open handshake
+    /// (SYN-ACK sent, final ACK/RST lost) leaves the listener in SYN-RECEIVED forever.
+    /// A listener with no traffic is unaffected.
+    pub accept_timeout: Option<Duration>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -457,6 +462,7 @@ async fn my_listen_and_serve<P: routing::PathRouter<GenericAppState>, GenericApp
     loop {
         let mut socket =
             embassy_net::tcp::TcpSocket::new(stack, &mut *tcp_rx_buffer, &mut *tcp_tx_buffer);
+        socket.set_timeout(web_server_config.accept_timeout);
 
         debug!(
             "[{task_id}] {}: listening TCP:{port}",

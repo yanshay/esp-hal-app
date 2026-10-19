@@ -160,6 +160,11 @@ pub struct FrameworkSettings {
     pub web_server_num_listeners: usize,
     pub web_server_tls_certificate: &'static str,
     pub web_server_tls_private_key: &'static str,
+    /// TCP timeout applied to web server listeners while waiting in accept(). Without one, a
+    /// half-open handshake (SYN-ACK sent, final ACK/RST lost) leaves the listener stuck in
+    /// SYN-RECEIVED forever. Replaced by the per-connection timeout once a connection is accepted.
+    /// Set to `None` to keep the previous behavior (no timeout).
+    pub web_server_accept_timeout: Option<Duration>,
 
     pub web_app_domain: &'static str,
     pub web_app_security_key_length: usize,
